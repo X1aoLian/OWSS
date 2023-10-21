@@ -246,4 +246,9 @@ def ori_DensityPeaks(xi, precent, start, end, DistanceMat):
 
     return rho, delta, nneigh, xx
 
-
+def mask_list(data, ratio):
+    data_idx = torch.arange(0, data.size(0))
+    train_mask = torch.zeros(data.size(0), dtype=torch.bool)
+    train_idx = data_idx[:int(data.size(0) * ratio)]
+    train_mask[train_idx] = True
+    return train_mask
