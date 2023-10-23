@@ -1,249 +1,120 @@
 import numpy as np
-from matplotlib import pyplot as plt, pylab
-from scipy.spatial import distance
-import itertools
+import pandas as pd
+import torch
+from datasets import Dataset
+from sklearn.metrics import pairwise_distances
 
 
-def list_of_groups(list_info, per_list_len):
-    list_of_group = zip(*(iter(list_info),) *per_list_len)
-    end_list = [list(i) for i in list_of_group] # i is a tuple
-    count = len(list_info) % per_list_len
-    end_list.append(list_info[-count:]) if count !=0 else end_list
-    return end_list
+def iterabel_dataset_generation(path):
+    path = '../data/musk.csv'
+    df = pd.read_csv(path, header=None)
+    dataset = Dataset.from_pandas(df)
+    iterable_dataset = dataset.to_iterable_dataset()
+    #    print(np.array(list(example.values())))
+    return iterable_dataset
 
-def PairDotsDistance(Dots, matrix, start, end):
-    numOfDots = end - start
-    if end == 2096:
-        for i in range(0, numOfDots - 1):
-            for j in range(i + 1, numOfDots):
-                matrix[i][j] = np.sqrt(np.sum((Dots[:, i] - Dots[:, j])**2))
-    else:
-        for j in range(1000, numOfDots):
-            for i in range(0, j):
-                matrix[i][j] = np.sqrt(np.sum((Dots[:, i] - Dots[:, j]) ** 2))
+def mask_list(data, ratio):
+    data_idx = np.arange(0, len(data))
+    train_mask = np.zeros(len(data), dtype=bool)
+    train_idx = data_idx[:int(len(data) * ratio)]
+    train_mask[train_idx] = True
+    return train_mask
 
-    return  matrix
+class DynamicDistanceMatrix:
+    def __init__(self, number_of_instances, number_of_features, n_clusters):
+        self.N = number_of_instances
+        self.M = number_of_features
+        self.centers =  n_clusters
+        self.distance_matrix = np.zeros((number_of_instances, number_of_instances))
+        self.current_size = 0
 
-def ori_PairDotsDistance(Dots, start, end, Distance):
-    DistanceMat = []
-    numOfDots = end - start
+    def matric_initialization(self, new_samples):
+        # 如果矩阵尚未被填满
+            self.data = new_samples
+            self.distance_matrix = pairwise_distances(self.data, self.data)
+        # 当矩阵被填满后
 
-    window_size = 1000
-    if start == 0:
-        for i in range(start, numOfDots - 1):
-            for j in range(i+1, numOfDots):
-                DistanceMat.append(i)
-                DistanceMat.append(j)
-                DistanceMat.append(np.sqrt(np.sum((Dots[:, i] - Dots[:, j])**2)))
-        return np.array(list_of_groups(DistanceMat, 3))
-    else:
-        for i in range(0, end - 1):
-            if i < window_size + start:
-                for j in range(end - start, end):
-                    DistanceMat.append(i)
-                    DistanceMat.append(j)
-                    DistanceMat.append(np.sqrt(np.sum((Dots[:, i] - Dots[:, j])**2)))
-            else:
-                for j in range(i + 1, end):
-                    DistanceMat.append(i)
-                    DistanceMat.append(j)
-                    DistanceMat.append(np.sqrt(np.sum((Dots[:, i] - Dots[:, j])**2)))
+    def matrix_update(self, new_sample):
+        # 在data中移除第一个样本，并在尾部添加新的样本
+        self.data[:-1] = self.data[1:]
+        self.data[-1] = new_sample
 
+        # 使用numpy的slicing更新距离矩阵
+        self.distance_matrix[:-1, :] = self.distance_matrix[1:, :]
+        self.distance_matrix[:, :-1] = self.distance_matrix[:, 1:]
 
-        return np.concatenate((Distance, np.array(list_of_groups(DistanceMat, 3))), axis = 0)
+        # 使用pairwise_distances计算新样本与所有样本的距离，并更新到矩阵中
+        distances = pairwise_distances([new_sample], self.data).flatten()
+        self.distance_matrix[-1, :] = distances
+        self.distance_matrix[:, -1] = distances
 
-    #print(DistanceMat)
+    def density_peak_clustering(self, distance_matrix, dc_percentile=2.0):
+        # 计算截断距离dc
+        dc = np.percentile(distance_matrix, dc_percentile)
+        # 计算每个点的密度
+        rho = np.sum(np.exp(-(distance_matrix / dc) ** 2), axis=1) - 1
+        # 计算每个点的delta
+        max_distance = np.max(distance_matrix)
+        delta = np.full_like(rho, max_distance)
+        nearest_higher_density = np.full_like(rho, -1, dtype=int)
+        for i in range(len(rho)):
+            mask = rho > rho[i]
+            if mask.any():
+                delta[i] = np.min(distance_matrix[i, mask])
+                nearest_higher_density[i] = np.argmin(distance_matrix[i, mask])
+        # 选择聚类中心
+        cluster_centers = np.argsort(delta)[-self.centers:]
+        return cluster_centers
 
-
-def DensityPeaks(xi, precent, start, end, matrix):
-
-    xiT = xi.T
-    dist = PairDotsDistance(xiT, matrix, start, end)
-    # print('average percentage of neighbours (hard coded): %5.6f\n', precent)
-
-    N = (end * end)/2 - end
-    position = round(N * precent / 100, 0)
-    x = np.delete(dist.flatten(), np.where(dist.flatten() == 0))
-    dc = np.sort(x)[int(position)]
-
-    rho = np.zeros((1, int(end))) # [i for i in range(1, ND)]
-
-    for i in range(0, int(end) - 1):
-        for j in range(i + 1, int(end)):
-            rho[0, i] = rho[0, i] + np.math.exp(-(dist[i, j] / dc) * (dist[i, j] / dc))
-            rho[0, j] = rho[0, j] + np.math.exp(-(dist[i, j] / dc) * (dist[i, j] / dc))
-    maxd = max(np.max(dist, axis=0))
+    def get_distance_matrix(self):
+        return self.distance_matrix
 
 
-    ordrho = np.argsort(-rho,axis=1)
-    delta = np.zeros((int(end)))
-    delta[ordrho[0,0] - 1] = -1.
-    delta = delta.reshape(-1, delta.shape[0])
-    nneigh = np.zeros((int(end)))
-    nneigh[ordrho[0,0] - 1] = 0
-    nneigh = nneigh.reshape(-1, nneigh.shape[0])
-
-    for ii in range(1, int(end)):
-        delta[0, ordrho[0, ii]] = maxd
-        for jj in range(0, ii - 1):
-            if (dist[ordrho[0, ii], ordrho[0, jj]] < delta[0, ordrho[0, ii]]):
-                delta[0, ordrho[0,ii]] = dist[ordrho[0, ii], ordrho[0, jj]]
-                nneigh[0, ordrho[0,ii]] = ordrho[0, jj]
-
-    delta[0, ordrho[0, 0]] = maxd
-    rho = rho.T
-    nneigh = nneigh.T
-    delta = delta.T
-    b = np.argmin(nneigh)
-    nneigh[b,0] = b
-    return rho, delta, nneigh, dist
+import torch.nn as nn
 
 
-def depthmin(x,n,depth):
-    if depth > 2:
-        return depth
-    else:
-        if n[x] != 0:
-            return depth
-        else:
-            depth += 1
-            return depthmin(int(n[x]),n, depth)
-def centerindex(delta):
-    center1 = np.argsort(delta, axis=0)[-1]
-    center2 = np.argsort(delta, axis=0)[-2]
-    center3 = np.argsort(delta, axis=0)[-3]
-    center4 = np.argsort(delta, axis=0)[-4]
-    center5 = np.argsort(delta, axis=0)[-5]
-    center6 = np.argsort(delta, axis=0)[-6]
-    center7 = np.argsort(delta, axis=0)[-7]
-    center8 = np.argsort(delta, axis=0)[-8]
-    center9 = np.argsort(delta, axis=0)[-9]
-    center10 = np.argsort(delta, axis=0)[-10]
-    center = [ center1,center2,center3,center4,center5]
-    return center
+class Autoencoder(nn.Module):
+    def __init__(self, input_dim, z_dim):
+        super(Autoencoder, self).__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, z_dim)
+        )
 
-def obtainlabel(x,n,label):
-    if label[n[x]] == 0:
-        return obtainlabel(int(n[x]),n,label)
-    else:
-        return label[n[x]]
+        self.decoder = nn.Sequential(
+            nn.Linear(z_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, input_dim)
+        )
 
-def clustering(dw, gamma=0.02, decision_graph=False,
-               alpha=0.5, beta=0.5, cluster=False, metric='euclidean'):
-    # step1: pairwise distance
-    condensed_distance = distance.pdist(dw, metric=metric)
-    d_c = np.sort(condensed_distance)[int(len(condensed_distance) * gamma)]
-    redundant_distance = distance.squareform(condensed_distance)
-    # step2: calculate local density
-    rho = np.sum(np.exp(-(redundant_distance / d_c) ** 2), axis=1)
+    def forward(self, x):
+        z = self.encoder(x)
+        x_reconstructed = self.decoder(z)
+        return z, x_reconstructed
 
-    # step3: calculate delta
-    order_distance = np.argsort(redundant_distance, axis=1)
-    delta = np.zeros_like(rho)
-    nn = np.zeros_like(rho).astype(int)
-    for i in range(len(delta)):
-        mask = rho[order_distance[i]] > rho[i]
-        if mask.sum() > 0:  # not the highest density point
-            nn[i] = order_distance[i][mask][0]
-            delta[i] = redundant_distance[i, nn[i]]
-        else:  # the highest density point
-            nn[i] = order_distance[i, -1]
-            delta[i] = redundant_distance[i, nn[i]]
-    if decision_graph:
-        plt.scatter(rho, delta)
-        plt.show()
 
-    rho_c = min(rho) + (max(rho) - min(rho)) * alpha
-    delta_c = min(delta) + (max(delta) - min(delta)) * beta
-    centers = np.where(np.logical_and(rho > rho_c, delta > delta_c))[0]
+def distanceloss(centers, pairdistance, lable):
+    loss = 0
 
-    if not cluster:
-        return centers
-    else:
-        labels = np.zeros_like(rho)
-        for i, v in enumerate(centers):
-            labels[v] = i
-        order_rho = np.argsort(rho)[::-1]
-        for p in order_rho:
-            if p not in centers:
-                labels[p] = labels[nn[p]]
-        return centers, labels
+    # 创建一个字典，以便能够根据两个样本的索引快速查找它们之间的距离
+    distance_dict = {}
+    for i, j, dist in pairdistance:
+        distance_dict[(i, j)] = dist
+        distance_dict[(j, i)] = dist  # 假设距离是对称的
 
-def ori_DensityPeaks(xi, precent, start, end, DistanceMat):
+    labeled_samples = [i for i, lbl in enumerate(lable) if lbl != 0]
 
-    xiT = xi.T
-    xx = ori_PairDotsDistance(xiT, start, end, DistanceMat)
-    xxT = xx
+    for i in labeled_samples:
+        closetcenter = float('inf')  # 使用正无穷大作为初始化值
+        for center in centers:
+            if lable[i] == lable[center]:
+                dist = distance_dict.get((i, center), 1)  # 如果找不到距离，则默认为1
+                closetcenter = min(closetcenter, dist)
+        loss += closetcenter
 
-    ND = np.max(xxT[:, 1]) + 1
-    NL = np.max(xxT[:, 0]) + 1
+    loss_tensor = torch.tensor([loss], requires_grad=True)
+    return loss_tensor
 
-    if NL > ND:
-        ND = NL
-    N = xxT.shape[0]
-
-    dist = np.zeros((int(ND),int(ND)))
-
-    for i in range(0, N):
-        ii = xxT[i, 0]
-        jj = xxT[i, 1]
-
-        dist[int(ii), int(jj)] = xxT[i, 2]
-        dist[int(jj), int(ii)] = xxT[i, 2]
-
-    # print('average percentage of neighbours (hard coded): %5.6f\n', precent)
-
-    position = round(N * precent / 100, 0)
-
-    sda = np.sort(xxT[:, 2])
-
-    dc = sda[int(position)]
-
-    rho = np.zeros((1, int(ND))) # [i for i in range(1, ND)]
-
-    for i in range(0, int(ND) - 1):
-        for j in range(i + 1, int(ND)):
-            rho[0, i] = rho[0, i] + np.math.exp(-(dist[i, j] / dc) * (dist[i, j] / dc))
-            rho[0, j] = rho[0, j] + np.math.exp(-(dist[i, j] / dc) * (dist[i, j] / dc))
-
-    maxd = max(np.max(dist, axis=0))
-
-    rho_sorted = np.sort(rho, axis=1)
-
-    rho_list = list(rho_sorted)
-    rho_list = list(itertools.chain.from_iterable(rho_list))
-    rho_list.reverse()
-    rho_list = np.array(rho_list)
-    rho_list = rho_list.reshape(-1, rho_list.shape[0])
-    rho_sorted = rho_list
-    ordrho = np.argsort(-rho,axis=1)
-
-    delta = np.zeros((int(ND)))
-    delta[ordrho[0,0] - 1] = -1.
-    delta = delta.reshape(-1, delta.shape[0])
-
-    nneigh = np.zeros((int(ND)))
-    nneigh[ordrho[0,0] - 1] = 0
-    nneigh = nneigh.reshape(-1, nneigh.shape[0])
-
-    for ii in range(1, int(ND)):
-        delta[0, ordrho[0, ii]] = maxd
-        for jj in range(0, ii - 1):
-            if (dist[ordrho[0, ii], ordrho[0, jj]] < delta[0, ordrho[0, ii]]):
-                delta[0, ordrho[0,ii]] = dist[ordrho[0, ii], ordrho[0, jj]]
-                nneigh[0, ordrho[0,ii]] = ordrho[0, jj]
-
-    delta[0, ordrho[0, 0]] = maxd
-
-    rho_sorted = rho_sorted.T
-    rho = rho.T
-    ordrho = ordrho.T
-    nneigh = nneigh.T
-    delta = delta.T
-
-    b = np.argmin(nneigh)
-    nneigh[b,0] = b
-
-    return rho, delta, nneigh, xx
 
 

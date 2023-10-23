@@ -1,15 +1,11 @@
-
+import torch
 from torch.autograd import Variable
 from loaddatasets import *
 from model import  RejectModel, MLP
-
-
-
 import time
+from metric import *
 
-
-def warm(data, mask_label, start_windows, end_window, DistanceMat, latent_size, weightrejection, prediction, training_epoch, path, number):
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+def warm(data, mask_label, start_windows, end_window, DistanceMat, latent_size, weightrejection, prediction, path, number):
 
     _, feature_num = data.size()
     net = MLP(feature_num).to(device)
@@ -18,7 +14,7 @@ def warm(data, mask_label, start_windows, end_window, DistanceMat, latent_size, 
     rho, delta, neighbor, DistanceMat, centers = net.densitypeaks(out.cpu().detach().numpy(), start_windows,
                                                                    end_window, DistanceMat)
 
-    optimizer1 = torch.optim.Adam(net.parameters(), lr=0.01)
+    optimizer1 = torch.optim.Adam(net.parameters(), lr=0.001)
 
     for center in centers:
         if label[center]  == 0:
@@ -114,6 +110,12 @@ def train(data, label,model_layers, training_epoch, latent_size, label_rate, pat
 
     return prediction
 
+def train_function(num_of_warning, data):
+    dynamic_distance_matrix = DynamicDensityPeak(num_of_warning, 10, 5)
+    for index, instance in enumerate(data):
+            cluster_centers, nearest_higher_density = dynamic_distance_matrix.add_sample(instance)
+
+
 
 
 
@@ -121,6 +123,7 @@ def train(data, label,model_layers, training_epoch, latent_size, label_rate, pat
 
 
 if __name__ == '__main__':
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     label_rate = 0.2
     model_layers = 4
     training_epoch = 5
