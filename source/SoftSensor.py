@@ -16,12 +16,12 @@ def iterabel_dataset_generation(path):
     df.iloc[:, 1:] = scaler.fit_transform(df.iloc[:, 1:])
 
     shuffled_df = df.sample(frac=1).reset_index(drop=True)
-    mask_data = mask_list(shuffled_df.values, 0.8)
+    mask = mask_list(shuffled_df.values, 0.5)
     dataset = Dataset.from_pandas(shuffled_df.iloc[:, 1:])
     label = shuffled_df.iloc[:, 0].values.astype(int)
     mask_label = label.copy()
-    mask_data = shuffle(mask_data, random_state=1415)
-    mask_label[mask_data] = 0
+    mask = shuffle(mask, random_state=1415)
+    mask_label[mask] = 0
     iterable_dataset = dataset.to_iterable_dataset()
     return iterable_dataset, label, mask_label
 
@@ -37,12 +37,30 @@ def propagate_labels(centers_idx, labels, propagated_labels, distances, buffer):
                     break
 
     # 然后，传播中心的标签到其他未标记的样本中
-    for i in range(len(labels)):
-        if np.isin(i, buffer) & ~np.isin(i, centers_idx):
-            distances_to_centers = distances[i, centers_idx]
-            sorted_center_indices = np.argsort(distances_to_centers)
-            propagated_labels[i] = propagated_labels[centers_idx[sorted_center_indices[0]]]
+    #for i in range(len(labels)):
+    #    if np.isin(i, buffer) & ~np.isin(i, centers_idx):
+    #        distances_to_centers = distances[i, centers_idx]
+    #        sorted_center_indices = np.argsort(distances_to_centers)
+    #        propagated_labels[i] = propagated_labels[centers_idx[sorted_center_indices[0]]]
+    for index in range(len(labels)):
+        if np.isin(index, buffer):
+            nearest_1 = np.argmin([float('inf') if i == index else distances[index][i] for i in range(distances.shape[0])])
+            nearest_2 = np.argmin(
+                [float('inf') if i in [index, nearest_1] else distances[nearest_1][i] for i in range(distances.shape[0])])
+            nearest_3 = np.argmin([float('inf') if i in [index, nearest_1, nearest_2] else distances[nearest_2][i] for i in
+                                   range(distances.shape[0])])
+            nearest_4 = np.argmin(
+                [float('inf') if i in [index, nearest_1, nearest_2, nearest_3] else distances[nearest_3][i] for i in
+                 range(distances.shape[0])])
 
+            if labels[nearest_1] != 0:
+                propagated_labels[index] = labels[nearest_1]
+            elif labels[nearest_2] != 0:
+                propagated_labels[index] = labels[nearest_2]
+            elif labels[nearest_3] != 0:
+                propagated_labels[index] = labels[nearest_3]
+            else:
+                propagated_labels[index] = labels[nearest_4]
 
 class AutoEncoder(nn.Module):
     def __init__(self, input_dim, latent_dim):
@@ -71,9 +89,9 @@ class RejectionModel(nn.Module):
     def __init__(self, input_dim):
         super(RejectionModel, self).__init__()
         self.model = nn.Sequential(
-            nn.Linear(input_dim, 128),
+            nn.Linear(input_dim, 64),
             nn.ReLU(),
-            nn.Linear(128, 1)
+            nn.Linear(64, 1)
         )
 
     def forward(self, x):
@@ -101,14 +119,16 @@ class CombinedModel(nn.Module):
 
 
 
-def autoencoder_loss(x, x_reconstructed, z, centers_idx, distance_matrix, mask_label):
+def autoencoder_loss(x, x_reconstructed, z, centers_idx, distance_matrix, pre_label):
     reconstruction_loss = nn.MSELoss()(x, x_reconstructed)
-    contrastive_loss = contrastive_learning_loss(centers_idx, distance_matrix, mask_label)
-    return reconstruction_loss + contrastive_loss
+    contrastive_loss = contrastive_learning_loss(centers_idx, distance_matrix, pre_label)
+    return  reconstruction_loss + 1.5 * contrastive_loss
 
 def rejection_model_loss(r, prediction, mask_label, lambda_):
-    first_term = 1 + 0.5 * (np.sum(r.detach().numpy()) - np.sum((prediction.detach().numpy() == mask_label) & (mask_label != 0)))
+    indicator  = [1 if a != 0 and a == b else -1 if a != 0 and a != b else 0 for a, b in zip(mask_label, prediction.detach().numpy())]
+    first_term = 1 + 0.5 * (np.sum(r.detach().numpy()) - np.sum(indicator))
     secondterm = lambda_ * (1 - (1 / (2 * lambda_ - 1 ) * np.sum(r.detach().numpy())))
+
     result = np.max([first_term, secondterm, 0])
     loss_tensor = torch.tensor([result], requires_grad=True)
     return loss_tensor
@@ -126,7 +146,7 @@ def contrastive_learning_loss(centers, pairdistance, lable):
             elif lable[i] == lable[center] and int(i) > int(center):
                 closetcenter.append(pairdistance[center, i])
             else:
-                closetcenter.append(0.01)
+                closetcenter.append(0.001)
 
         loss = loss + min(closetcenter)
         closetcenter = []
@@ -145,8 +165,8 @@ def warm(warm_data_array, numberofwarming, epoch):
         distance_matrix = dynamic_distance_matrix.get_distance_matrix()
         centers_idx = dynamic_distance_matrix.density_peak_clustering(distance_matrix)
         propagate_labels(centers_idx, mask_label[:number_of_warning], propagated_labels[:number_of_warning],distance_matrix, buffer)
-        loss_ae = autoencoder_loss(warm_data_tensor, reconstructed_instance, reduced_instance, centers_idx, distance_matrix, mask_label[:numberofwarming])
-        loss_rm = rejection_model_loss(rejection_value, propagated_labels[:numberofwarming], mask_label[:numberofwarming],5)
+        loss_ae = autoencoder_loss(warm_data_tensor, reconstructed_instance, reduced_instance, centers_idx, distance_matrix, propagated_labels[:numberofwarming])
+        loss_rm = rejection_model_loss(rejection_value, propagated_labels[:numberofwarming], mask_label[:numberofwarming],1)
 
         #loss = loss_ae + loss_rm
         # 更新自编码器
@@ -168,16 +188,13 @@ def train(new_instance, numberofwarming, index):
     distance_matrix = dynamic_distance_matrix.get_distance_matrix()
     centers_idx = dynamic_distance_matrix.density_peak_clustering(distance_matrix)
     rejection_value = rejection_model(torch.Tensor(dynamic_distance_matrix.data))
-
     buffer = np.array(np.where(rejection_value.squeeze() > 0))[0]
-
     propagate_labels(centers_idx, mask_label[index - numberofwarming+ 1: index+1], propagated_labels[index - numberofwarming + 1: index+1], distance_matrix, buffer)
 
     loss_ae = autoencoder_loss(new_instance_tensor, reconstructed_instance, reduced_instance, centers_idx, distance_matrix,
-                               mask_label[index - numberofwarming+ 1: index +1])
+                             propagated_labels[index - numberofwarming+ 1: index +1])
     loss_rm = rejection_model_loss(rejection_value, propagated_labels[index - numberofwarming + 1: index+1], mask_label[index - numberofwarming+ 1: index+1],
-                                   5)
-
+                                   1)
     # 更新自编码器
     optimizer_ae.zero_grad()
     loss_ae.backward(retain_graph=True)
@@ -221,12 +238,12 @@ if __name__ == '__main__':
     number_of_warning = 200
 
     #model initialization
-    dynamic_distance_matrix = DynamicDistanceMatrix(number_of_warning, 20, 10)
+    dynamic_distance_matrix = DynamicDistanceMatrix(number_of_warning, 20, 5)
     autoencoder = AutoEncoder(input_dim=166, latent_dim=20)
     rejection_model = RejectionModel(input_dim=20)
     #model = CombinedModel(166, 20)
     optimizer_ae = optim.SGD(autoencoder.parameters(), lr=0.001)
-    optimizer_rm = optim.SGD(rejection_model.parameters(), lr=0.001)
+    optimizer_rm = optim.SGD(rejection_model.parameters(), lr=0.01)
 
     propagated_labels = torch.tensor(mask_label, dtype=torch.int64)  # 转换为torch张量
 
@@ -238,7 +255,7 @@ if __name__ == '__main__':
             warm_data_array[index] = instance
 
             if index == number_of_warning - 1:
-                warm(warm_data_array, number_of_warning, 15)
+                warm(warm_data_array, number_of_warning, 100)
                 print('---------------------------------')
         else:
             train(instance,number_of_warning, index)
