@@ -1,41 +1,3 @@
-def get_label(row):
-    if row['Label0-pass'] == 1 or row['Label0-fail'] == 1 or row['Label1-fail'] == 1or row['Label1-fail'] == 1or row['Label2-fail'] == 1or row['Label2-fail'] == 1 :
-        return 0
-    elif row['Label3-pass'] == 1:
-        return 1
-    elif row['Label3-fail'] == 1:
-        return 2
-    elif row['Label4-pass'] == 1:
-        return 3
-    elif row['Label4-fail'] == 1:
-        return 4
-    elif row['Label5-pass'] == 1:
-        return 5
-    elif row['Label5-fail'] == 1:
-        return 6
-    elif row['Label6-pass'] == 1:
-        return 7
-    elif row['Label6-fail'] == 1:
-        return 8
-    elif row['Label7-pass'] == 1:
-        return 9
-    elif row['Label7-fail'] == 1:
-        return 10
-    elif row['Label8-pass'] == 1:
-        return 11
-    elif row['Label8-fail'] == 1:
-        return 12
-    elif row['Label9-pass'] == 1:
-        return 13
-    elif row['Label9-fail'] == 1:
-        return 14
-    elif row['Label10-pass'] == 1:
-        return 15
-    elif row['Label10-fail'] == 1:
-        return 16
-    else:
-        return None  # 或其他默认值
-
 import torch
 from datasets import load_dataset, Dataset
 import pandas as pd
@@ -46,36 +8,59 @@ from metric import *
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import f1_score, recall_score, precision_score
 
+from sklearn.manifold import TSNE
+import matplotlib.pyplot as plt
+
+# 假设df是你的DataFrame
+def transform_label(value):
+    if value == 7:
+        return 1
+    elif value != 0:
+        return 2
+    else:
+        return 0
+
+
+
 def iterabel_dataset_generation(path):
     df = pd.read_csv(path)
-    df['Label'] = df.apply(get_label, axis=1)
+    df['label'] = df['label'].apply(transform_label)
 
-    # 删除原始标签列
-    label_columns = ['Label0-pass', 'Label0-fail', 'Label1-pass', 'Label1-fail', 'Label2-pass', 'Label2-fail', 'Label2-pass', 'Label2-fail'
-                     , 'Label3-pass', 'Label3-fail', 'Label4-pass', 'Label4-fail', 'Label5-pass', 'Label5-fail', 'Label6-pass', 'Label6-fail'
-                     , 'Label7-pass', 'Label7-fail', 'Label8-pass', 'Label8-fail', 'Label9-pass', 'Label9-fail', 'Label10-pass', 'Label10-fail']
-    df = df.drop(columns=label_columns)
     # Normalize the data
-    print(df)
     shuffled_df = df.sample(frac=1).reset_index(drop=True)
-    mask = mask_list(shuffled_df.values, 0.5)
-    dataset = Dataset.from_pandas(shuffled_df.iloc[:, :-1])
+    mask = mask_list(shuffled_df.values, 0.8)
+    data = shuffled_df.iloc[:, :-1]
+    num_rows, num_cols = data.shape
+    rows_per_chunk = num_rows // 10
+    cols_per_chunk = num_cols // 10
+
+    for i in range(9):
+        start_row = i * rows_per_chunk
+        end_row = start_row + rows_per_chunk
+        end_col = (i + 1) * cols_per_chunk
+
+        # 将超出范围的列设置为 0
+        data.iloc[start_row:end_row, end_col:] = 0
+
+    # 处理最后一个块（它可能有多于 rows_per_chunk 的行）
+    data.iloc[9 * rows_per_chunk:, :] = data.iloc[9 * rows_per_chunk:, :]
+    dataset = Dataset.from_pandas(data)
     label = shuffled_df.iloc[:, -1].values.astype(int)
+
     mask_label = label.copy()
     mask = shuffle(mask, random_state=1415)
-    mask_label[mask] = 0
+    mask_label[mask] = 2
     iterable_dataset = dataset.to_iterable_dataset()
     return iterable_dataset, label, mask_label
 
 
 def propagate_labels(centers_idx, labels, propagated_labels, distances, buffer):
-    print(centers_idx)
     # 先为没有标签的中心找到最近的、已经标记的样本，并传播标签
     for center in centers_idx:
-        if labels[center] == 0:
+        if labels[center] == 2:
             sorted_neighbors = np.argsort(distances[center])
             for neighbor in sorted_neighbors:
-                if labels[neighbor] != 0:
+                if labels[neighbor] != 2:
                     propagated_labels[center] = labels[neighbor]
                     break
 
@@ -96,11 +81,11 @@ def propagate_labels(centers_idx, labels, propagated_labels, distances, buffer):
                 [float('inf') if i in [index, nearest_1, nearest_2, nearest_3] else distances[nearest_3][i] for i in
                  range(distances.shape[0])])
 
-            if labels[nearest_1] != 0:
+            if labels[nearest_1] != 2:
                 propagated_labels[index] = labels[nearest_1]
-            elif labels[nearest_2] != 0:
+            elif labels[nearest_2] != 2:
                 propagated_labels[index] = labels[nearest_2]
-            elif labels[nearest_3] != 0:
+            elif labels[nearest_3] != 2:
                 propagated_labels[index] = labels[nearest_3]
             else:
                 propagated_labels[index] = labels[nearest_4]
@@ -165,10 +150,10 @@ class CombinedModel(nn.Module):
 def autoencoder_loss(x, x_reconstructed, z, centers_idx, distance_matrix, pre_label):
     reconstruction_loss = nn.MSELoss()(x, x_reconstructed)
     contrastive_loss = contrastive_learning_loss(centers_idx, distance_matrix, pre_label)
-    return  reconstruction_loss + 1.5 * contrastive_loss
+    return  reconstruction_loss + 0.5 * contrastive_loss
 
 def rejection_model_loss(r, prediction, mask_label, lambda_):
-    indicator  = [1 if a != 0 and a == b else -1 if a != 0 and a != b else 0 for a, b in zip(mask_label, prediction.detach().numpy())]
+    indicator  = [1 if a != 2 and a == b else -1 if a != 2 and a != b else 0 for a, b in zip(mask_label, prediction.detach().numpy())]
     first_term = 1 + 0.5 * (np.sum(r.detach().numpy()) - np.sum(indicator))
     secondterm = lambda_ * (1 - (1 / (2 * lambda_ - 1 ) * np.sum(r.detach().numpy())))
 
@@ -179,11 +164,10 @@ def rejection_model_loss(r, prediction, mask_label, lambda_):
 
 def contrastive_learning_loss(centers, pairdistance, lable):
     loss = 0
-    index = np.where(lable != 0)[0]
+    index = np.where(lable != 2)[0]
     closetcenter = []
     for i in (index):
         for center in centers:
-
             if lable[i] == lable[center] and int(i) < int(center):
                 closetcenter.append(pairdistance[i, center])
             elif lable[i] == lable[center] and int(i) > int(center):
@@ -204,12 +188,14 @@ def warm(warm_data_array, numberofwarming, epoch):
         rejection_value = rejection_model(reduced_instance)
         #rejection_value, reconstructed_instance, reduced_instance = model(warm_data_tensor)
         buffer = np.array(np.where(rejection_value.squeeze() > 0))[0]
+        print(buffer)
         dynamic_distance_matrix.matric_initialization(reduced_instance.detach().numpy())
         distance_matrix = dynamic_distance_matrix.get_distance_matrix()
         centers_idx = dynamic_distance_matrix.density_peak_clustering(distance_matrix)
+
         propagate_labels(centers_idx, mask_label[:number_of_warning], propagated_labels[:number_of_warning],distance_matrix, buffer)
         loss_ae = autoencoder_loss(warm_data_tensor, reconstructed_instance, reduced_instance, centers_idx, distance_matrix, propagated_labels[:numberofwarming])
-        loss_rm = rejection_model_loss(rejection_value, propagated_labels[:numberofwarming], mask_label[:numberofwarming],1)
+        loss_rm = rejection_model_loss(rejection_value, propagated_labels[:numberofwarming], mask_label[:numberofwarming],10)
 
         #loss = loss_ae + loss_rm
         # 更新自编码器
@@ -237,7 +223,7 @@ def train(new_instance, numberofwarming, index):
     loss_ae = autoencoder_loss(new_instance_tensor, reconstructed_instance, reduced_instance, centers_idx, distance_matrix,
                              propagated_labels[index - numberofwarming+ 1: index +1])
     loss_rm = rejection_model_loss(rejection_value, propagated_labels[index - numberofwarming + 1: index+1], mask_label[index - numberofwarming+ 1: index+1],
-                                   1)
+                                   20)
     # 更新自编码器
     optimizer_ae.zero_grad()
     loss_ae.backward(retain_graph=True)
@@ -255,32 +241,33 @@ def compute_accuracy(labels, predictions):
     total_count = 0
 
     for label, pred in zip(labels, predictions):
-        if pred == 0:
+        if pred == 2:
             continue
         if label == pred:
             correct_count += 1
         total_count += 1
 
-    if total_count == 0:
+    if total_count == 2:
         return 0  # 避免除以零的情况
     return correct_count / total_count
+
 def compute_f1_transformed(labels, predictions):
     assert len(labels) == len(predictions), "标签和预测值数量必须相同"
 
     # 把-1和1都当作1来处理
-    labels_transformed =  [1 if x != 0 else 0 for x in labels]
-    predictions_transformed = [1 if x != 0 else 0 for x in predictions]
+    labels_transformed =  [0 if x != 2 else 1 for x in labels]
+    predictions_transformed = [0 if x != 2 else 1 for x in predictions]
 
-    return f1_score(labels_transformed, predictions_transformed, pos_label=0)
+    return f1_score(labels_transformed, predictions_transformed)
 
 if __name__ == '__main__':
-    path = '../data/final.csv'
+    path = '../data/generated_final_dataset.csv'
     iterable_dataset, label, mask_label = iterabel_dataset_generation(path)
     ground_truth = []
     number_of_warning = 200
 
     #model initialization
-    dynamic_distance_matrix = DynamicDistanceMatrix(number_of_warning, 20, 20)
+    dynamic_distance_matrix = DynamicDistanceMatrix(number_of_warning, 20, 4)
     autoencoder = AutoEncoder(input_dim=94, latent_dim=20)
     rejection_model = RejectionModel(input_dim=20)
     #model = CombinedModel(166, 20)
@@ -290,18 +277,23 @@ if __name__ == '__main__':
     propagated_labels = torch.tensor(mask_label, dtype=torch.int64)  # 转换为torch张量
 
     warm_data_array = np.zeros((number_of_warning, 94))
+
     for index, example in enumerate(iterable_dataset):
+        print(index)
         example = list(example.values())
         instance = np.array(example)
         if index < number_of_warning:
             warm_data_array[index] = instance
 
             if index == number_of_warning - 1:
-                warm(warm_data_array, number_of_warning, 3)
+                warm(warm_data_array, number_of_warning, 5)
                 print('---------------------------------')
         else:
             train(instance,number_of_warning, index)
 
+    print(np.sum(label == 2))
+    print(np.sum(mask_label == 2))
+    print(np.sum(propagated_labels.numpy() == 2))
     acc = compute_accuracy(label, propagated_labels)
     f1 = compute_f1_transformed(label, propagated_labels)
 
