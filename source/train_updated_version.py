@@ -264,7 +264,7 @@ if __name__ == '__main__':
     path = '../data/generated_final_dataset.csv'
     iterable_dataset, label, mask_label = iterabel_dataset_generation(path)
     ground_truth = []
-    number_of_warning = 200
+    number_of_warning = 100
 
     #model initialization
     dynamic_distance_matrix = DynamicDistanceMatrix(number_of_warning, 20, 4)

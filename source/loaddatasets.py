@@ -48,26 +48,31 @@ def iterabel_dataset_generation(path):
     sensors = [f"Sensor{i+1}" for i in range(94)]
     df = df[sensors + ["label"] + labels_pass + labels_fail]
 
-    label_columns = ['Label0-pass', 'Label0-fail', 'Label1-pass', 'Label1-fail', 'Label2-pass', 'Label2-fail',
-                     'Label2-pass', 'Label2-fail'
-        , 'Label3-pass', 'Label3-fail', 'Label4-pass', 'Label4-fail', 'Label5-pass', 'Label5-fail', 'Label6-pass',
-                     'Label6-fail'
-        , 'Label7-pass', 'Label7-fail', 'Label8-pass', 'Label8-fail', 'Label9-pass', 'Label9-fail', 'Label10-pass',
-                     'Label10-fail']
-    df = df.drop(columns=label_columns)
+
 
     # 计算new_label列中值不为0的样本数量
     non_zero_count = ((df['label'] != 0) & (df['label'] != 12)).sum()
 
     # 从值为0的样本中随机采样
-    sampled_zero_df = df[df['label'] == 0 ].sample(n=1 * non_zero_count, replace=False)
-
+    #sampled_zero_df = df[df['label'] == 0 ].sample(n=1 * non_zero_count, replace=False)
+    sampled_zero_df = df[(df['label'] != 0) & (df['Label6-pass'] == 1)]
+    sampled_zero_df = sampled_zero_df.sample(n=1 * non_zero_count, replace=False)
+    print(sampled_zero_df)
     # 获取值不为0的样本
     non_zero_df = df[(df['label'] != 0) & (df['label'] != 12)]
 
 
     # 将两部分数据组合
     final_df = pd.concat([sampled_zero_df, non_zero_df], axis=0)
+
+    label_columns = ['Label0-pass', 'Label0-fail', 'Label1-pass', 'Label1-fail', 'Label2-pass', 'Label2-fail',
+                     'Label2-pass', 'Label2-fail'
+        , 'Label3-pass', 'Label3-fail', 'Label4-pass', 'Label4-fail', 'Label5-pass', 'Label5-fail', 'Label6-pass',
+                     'Label6-fail'
+        , 'Label7-pass', 'Label7-fail', 'Label8-pass', 'Label8-fail', 'Label9-pass', 'Label9-fail', 'Label10-pass',
+                     'Label10-fail']
+    final_df = final_df.drop(columns=label_columns)
+
     print(final_df)
     # 保存为CSV文件
     final_df.to_csv('../data/generated_final_dataset.csv', index=False)
