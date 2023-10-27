@@ -55,9 +55,10 @@ def iterabel_dataset_generation(path):
 
     # 从值为0的样本中随机采样
     #sampled_zero_df = df[df['label'] == 0 ].sample(n=1 * non_zero_count, replace=False)
-    sampled_zero_df = df[(df['label'] != 0) & (df['Label6-pass'] == 1)]
-    sampled_zero_df = sampled_zero_df.sample(n=1 * non_zero_count, replace=False)
+    sampled_zero_df = df[(df['label'] == 0) & (df['Label10-pass'] == 1)]
     print(sampled_zero_df)
+    sampled_zero_df = sampled_zero_df.sample(n=1 * non_zero_count, replace=False)
+
     # 获取值不为0的样本
     non_zero_df = df[(df['label'] != 0) & (df['label'] != 12)]
 
@@ -73,7 +74,7 @@ def iterabel_dataset_generation(path):
                      'Label10-fail']
     final_df = final_df.drop(columns=label_columns)
 
-    print(final_df)
+
     # 保存为CSV文件
     final_df.to_csv('../data/generated_final_dataset.csv', index=False)
     return final_df.values[:, :-1], final_df.values[:, -1]
@@ -81,5 +82,3 @@ def iterabel_dataset_generation(path):
 
 path = '../data/final.csv'
 data, label = iterabel_dataset_generation(path)
-
-

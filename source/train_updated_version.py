@@ -218,12 +218,13 @@ def train(new_instance, numberofwarming, index):
     centers_idx = dynamic_distance_matrix.density_peak_clustering(distance_matrix)
     rejection_value = rejection_model(torch.Tensor(dynamic_distance_matrix.data))
     buffer = np.array(np.where(rejection_value.squeeze() > 0))[0]
+    print(buffer)
     propagate_labels(centers_idx, mask_label[index - numberofwarming+ 1: index+1], propagated_labels[index - numberofwarming + 1: index+1], distance_matrix, buffer)
 
     loss_ae = autoencoder_loss(new_instance_tensor, reconstructed_instance, reduced_instance, centers_idx, distance_matrix,
                              propagated_labels[index - numberofwarming+ 1: index +1])
     loss_rm = rejection_model_loss(rejection_value, propagated_labels[index - numberofwarming + 1: index+1], mask_label[index - numberofwarming+ 1: index+1],
-                                   20)
+                                   10)
     # 更新自编码器
     optimizer_ae.zero_grad()
     loss_ae.backward(retain_graph=True)
@@ -257,17 +258,17 @@ def compute_f1_transformed(labels, predictions):
     # 把-1和1都当作1来处理
     labels_transformed =  [0 if x != 2 else 1 for x in labels]
     predictions_transformed = [0 if x != 2 else 1 for x in predictions]
-
+    print(recall_score(labels_transformed, predictions_transformed))
     return f1_score(labels_transformed, predictions_transformed)
 
 if __name__ == '__main__':
     path = '../data/generated_final_dataset.csv'
     iterable_dataset, label, mask_label = iterabel_dataset_generation(path)
     ground_truth = []
-    number_of_warning = 100
+    number_of_warning = 300
 
     #model initialization
-    dynamic_distance_matrix = DynamicDistanceMatrix(number_of_warning, 20, 4)
+    dynamic_distance_matrix = DynamicDistanceMatrix(number_of_warning, 20, 6)
     autoencoder = AutoEncoder(input_dim=94, latent_dim=20)
     rejection_model = RejectionModel(input_dim=20)
     #model = CombinedModel(166, 20)
