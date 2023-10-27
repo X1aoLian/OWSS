@@ -55,7 +55,7 @@ def iterabel_dataset_generation(path):
 
     # 从值为0的样本中随机采样
     #sampled_zero_df = df[df['label'] == 0 ].sample(n=1 * non_zero_count, replace=False)
-    sampled_zero_df = df[(df['label'] == 0) & (df['Label10-pass'] == 1)]
+    sampled_zero_df = df[(df['label'] == 0) & (df['Label0-pass'] == 1)]
     print(sampled_zero_df)
     sampled_zero_df = sampled_zero_df.sample(n=1 * non_zero_count, replace=False)
 

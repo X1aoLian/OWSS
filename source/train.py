@@ -1,145 +1,152 @@
+import numpy as np
+import pandas as pd
+from sklearn.metrics import accuracy_score
+from sklearn.utils import shuffle
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+from sklearn.model_selection import train_test_split
+import torch
+from sklearn.metrics import f1_score, recall_score, precision_score
 
-from torch.autograd import Variable
-from loaddatasets import *
-from model import  RejectModel, MLP
+def dataset_generation(random_seed):
+    # 设置随机种子以便结果可复现
+    np.random.seed(random_seed)
 
+    n_samples = 10000  # 每组样本数
+    n_features = 200  # 样本特征数
+    # 生成数据
+    cluster1 = np.random.normal(np.zeros(n_features), 1, size=(n_samples, n_features))
+    cluster2 = np.random.normal(np.ones(n_features) * 3, 1, size=(n_samples, n_features))
+    cluster3 = np.random.normal(np.ones(n_features) * 100, 1, size=(5000, n_features))
 
+    # 分配标签
+    labels1 = np.zeros(n_samples)
+    labels2 = np.ones(n_samples)
+    labels3 = np.ones(5000)
 
-import time
+    # 组合数据和标签
+    data = np.vstack([cluster1, cluster2, cluster3])
+    labels = np.hstack([labels1, labels2, labels3])
 
+    # 生成index
+    index = np.array([0] * n_samples + [1] * n_samples + [2] * 5000)
 
-def warm(data, mask_label, start_windows, end_window, DistanceMat, latent_size, weightrejection, prediction, training_epoch, path, number):
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    # Shuffle数据，标签和index
+    data, labels, index = shuffle(data, labels, index)
 
-    _, feature_num = data.size()
-    net = MLP(feature_num).to(device)
-
-    out = net(data[start_windows:end_window])
-    rho, delta, neighbor, DistanceMat, centers = net.densitypeaks(out.cpu().detach().numpy(), start_windows,
-                                                                   end_window, DistanceMat)
-
-    optimizer1 = torch.optim.Adam(net.parameters(), lr=0.01)
-
-    for center in centers:
-        if label[center]  == 0:
-            label[center] = mask_label[neighbor[center]]
-    AE = RejectModel(latent_size).to(device)
-    optimizer = torch.optim.Adam(AE.parameters(), lr=0.001)
-    for _ in range(1):
-        z = out.detach().clone()
-        for _ in range(1):
-            rejectionlevel = AE(z)
-            buffer = np.array(np.where(rejectionlevel.cpu().detach().numpy().flatten() > 0))
-            for i in range(len(prediction)):
-                if np.isin(i, buffer):
-                    if mask_label[neighbor[i]] != 0:
-                        prediction[i] = mask_label[neighbor[i]]
-                    else:
-                        prediction[i] = mask_label[neighbor[int(neighbor[i])]]
-
-            firstterm = 1 + 0.5 * (torch.sum(rejectionlevel) / (end_window - start_windows) - torch.sum(torch.mul(prediction, mask_label)))
-            secondterm = weightrejection * (1 - (1 / (2 * weightrejection - 1) * torch.sum(rejectionlevel) / (end_window - start_windows)))
-            if firstterm > 0 or secondterm > 0:
-                if firstterm > secondterm:
-                    rejectionloss = firstterm
-                else:
-                    rejectionloss = secondterm
-            else:
-                rejectionloss = Variable(torch.Tensor([0.1]), requires_grad=True)
-
-            loss = rejectionloss
-            optimizer.zero_grad()
-            loss.backward(retain_graph=True)  #
-            optimizer.step()
-
-        net.update(net, optimizer1, centers, DistanceMat, prediction.cpu().numpy().copy())
-
-    np.save('../results/'+path+'/OOFLS/' + 'prediction' + str(number) +str(0)+'.npy', prediction.cpu().numpy().copy())
-
-    return net, AE, DistanceMat, prediction
+    return data, labels, index
 
 
-def train(data, label,model_layers, training_epoch, latent_size, label_rate, path, number):
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    data = data.to(device)
-    start_windows = 0
-    end_window = warmup[path]
-    weightrejection = 10
-    mask_label = label.clone().to(device)
-    DistanceMat = []
-    prediction = torch.zeros(len(label)).to(device)
+class CombinedModel(nn.Module):
+    def __init__(self):
+        super(CombinedModel, self).__init__()
 
-    net, AE, matrix, prediction = warm(data,mask_label,start_windows,end_window,DistanceMat,latent_size, weightrejection,prediction, training_epoch, path, number)
+        # Autoencoder
+        self.encoder = nn.Sequential(
+            nn.Linear(200, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
+            nn.ReLU()
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(64, 128),
+            nn.ReLU(),
+            nn.Linear(128, 200),
+            nn.ReLU()
+        )
 
-    for epoch in range(20):
-        start_windows = gap[path]*(epoch+1) +0
-        end_window = gap[path]*(epoch+1) +warmup[path]
-        out = net(data[:end_window])
-        rho, delta, neighbor, matrix, centers = net.densitypeaks(out.cpu().detach().numpy(), start_windows,
-                                                                       end_window, matrix)
+        # Classifier
+        self.classifier = nn.Sequential(
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1),
+            nn.Sigmoid()
+        )
 
-        optimizer1 = torch.optim.SGD(net.parameters(), lr=0.001)
+        # Rejection model
+        self.rejection = nn.Sequential(
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1)
+        )
+
+    def forward(self, x):
+        encoded = self.encoder(x)
+        decoded = self.decoder(encoded)
+        cls_out = self.classifier(encoded)
+        rej_out = self.rejection(encoded)
+        return decoded, cls_out, rej_out
+
+def rejection_loss(rejection_value, loss, D ,lambda_):
+
+    first_term = rejection_value + loss - D
+    secondterm = lambda_ * (1 - (1 / (2 * lambda_ - 1) * rejection_value))
+
+    result = torch.max(torch.max(first_term, secondterm), torch.tensor(0).to(first_term.device))
+
+    #loss_tensor = torch.tensor([result], requires_grad=True)
+    return result
 
 
-        optimizer = torch.optim.SGD(AE.parameters(), lr=0.001)
-        for _ in range(1):
-            z = out.detach().clone()
-            for _ in range(1):
-                rejectionlevel = AE(z[:end_window])
-                buffer = np.array(np.where(rejectionlevel.cpu().detach().numpy().flatten() > 0))
-                for i in range(len(prediction[:end_window])):
-                    if np.isin(i, buffer):
-                        if mask_label[:end_window][neighbor[i]] != 0:
-                            prediction[i] = mask_label[:end_window][neighbor[i]]
-                        else:
-                            prediction[i] = mask_label[:end_window][neighbor[int(neighbor[i])]]
+def evaluate_metrics(true_labels, predicted_labels):
+    # 1. Calculate accuracy for predicted values of 0 or 1
+    mask = predicted_labels != 2
+    accuracy = (true_labels[mask] == predicted_labels[mask]).float().mean().item()
 
-                firstterm = 1 + 0.5 * (torch.sum(rejectionlevel)  - torch.sum(torch.mul(prediction[:end_window], mask_label[:end_window])))
-                secondterm = weightrejection * (1 - (1 / (2 * weightrejection - 1 ) * torch.sum(rejectionlevel)))
-                if firstterm > 0 or secondterm > 0:
-                    if firstterm > secondterm:
-                        rejectionloss = firstterm
-                    else:
-                        rejectionloss = secondterm
-                else:
-                    rejectionloss = Variable(torch.Tensor([0.1]), requires_grad=True)
+    # 2.
+    true_binary = (true_labels == 2).numpy()
+    predicted_binary = (predicted_labels == 2).numpy()
 
-                loss = rejectionloss
-                optimizer.zero_grad()
-                loss.backward(retain_graph=True)  #
-                optimizer.step()
-            net.update(net, optimizer1, centers, matrix, prediction[:end_window].cpu().numpy().copy())
+    f1 = f1_score(true_binary, predicted_binary)
+    recall = recall_score(true_binary, predicted_binary)
+    precision = precision_score(true_binary, predicted_binary)
 
-        np.save('../results/'+path+'/OOFLS/' + 'prediction' + str(number) +str(epoch+1)+'.npy', prediction.cpu().numpy().copy())
-
-    return prediction
+    print(f"Accuracy (only for predicted 0 or 1): {accuracy}")
+    print(f"F1 Score: {f1}")
+    print(f"Recall: {recall}")
+    print(f"Precision: {precision}")
 
 
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = CombinedModel().to(device)
+criterion_ae = nn.MSELoss()
+criterion_cls = nn.BCELoss()
+criterion_rej = nn.MSELoss()
+
+optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+data, labels, index = dataset_generation(42)
+data, labels, index = torch.tensor(data), torch.tensor(labels), torch.tensor(index)
+prediction = []
+
+for epoch in range(1):
+    for i, x in enumerate(data):
+
+        input = x.to(device).float()
+        label = labels[i].to(device).float().unsqueeze(0)
+
+        optimizer.zero_grad()
+        decoded, cls_out, rej_out = model(input)
+        predicted_labels = (cls_out > 0.5).float()
+
+        loss_ae = criterion_ae(decoded, input)
+        loss_cls = criterion_cls(cls_out, label)
+
+        if rej_out < 0:
+            prediction.append(2)
+            combined_loss = loss_ae + loss_cls
+        else:
+            prediction.append(predicted_labels.item())
+            loss_rej = rejection_loss(rej_out, loss_cls, 5, 1)
+            combined_loss = loss_ae + loss_cls + loss_rej
+        combined_loss.backward()
+        optimizer.step()
 
 
-
-
-if __name__ == '__main__':
-    label_rate = 0.2
-    model_layers = 4
-    training_epoch = 5
-    reduced_size =  20
-    random_seed = 22
-    warmup = {'musk': 196, 'mnist': 175, 'optdigits': 219, 'satimage': 194, 'reuter': 3100}
-    gap = {'musk': 100, 'mnist': 200, 'optdigits': 185, 'satimage': 170, 'reuter': 100}
-
-    for path in [ 'musk', ]:
-        if path == 'musk':
-            data, label, x = musk_normalization(random_seed, label_rate)
-        data = torch.Tensor(data)
-        label = torch.Tensor(label)
-        mask_label = torch.Tensor(x)
-
-        for i in range(5):
-            prediction = train(data, mask_label, model_layers, training_epoch, reduced_size, label_rate, path=path, number=11)
-
-
-
-
-
+print(prediction)
+prediction_int = np.array(prediction, dtype=int)
+print(np.sum(prediction_int == 2))
+evaluate_metrics(index, torch.tensor(prediction))

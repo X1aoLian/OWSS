@@ -63,7 +63,7 @@ def propagate_labels(centers_idx, labels, propagated_labels, distances, buffer):
                 if labels[neighbor] != 2:
                     propagated_labels[center] = labels[neighbor]
                     break
-
+    print(propagated_labels[centers_idx[0]], propagated_labels[centers_idx[1]],propagated_labels[centers_idx[2]])
     # 然后，传播中心的标签到其他未标记的样本中
     #for i in range(len(labels)):
     #    if np.isin(i, buffer) & ~np.isin(i, centers_idx):
@@ -188,12 +188,12 @@ def warm(warm_data_array, numberofwarming, epoch):
         rejection_value = rejection_model(reduced_instance)
         #rejection_value, reconstructed_instance, reduced_instance = model(warm_data_tensor)
         buffer = np.array(np.where(rejection_value.squeeze() > 0))[0]
-        print(buffer)
+        print(buffer.shape)
         dynamic_distance_matrix.matric_initialization(reduced_instance.detach().numpy())
         distance_matrix = dynamic_distance_matrix.get_distance_matrix()
         centers_idx = dynamic_distance_matrix.density_peak_clustering(distance_matrix)
-
         propagate_labels(centers_idx, mask_label[:number_of_warning], propagated_labels[:number_of_warning],distance_matrix, buffer)
+        print(mask_label[:number_of_warning])
         loss_ae = autoencoder_loss(warm_data_tensor, reconstructed_instance, reduced_instance, centers_idx, distance_matrix, propagated_labels[:numberofwarming])
         loss_rm = rejection_model_loss(rejection_value, propagated_labels[:numberofwarming], mask_label[:numberofwarming],10)
 
@@ -218,7 +218,7 @@ def train(new_instance, numberofwarming, index):
     centers_idx = dynamic_distance_matrix.density_peak_clustering(distance_matrix)
     rejection_value = rejection_model(torch.Tensor(dynamic_distance_matrix.data))
     buffer = np.array(np.where(rejection_value.squeeze() > 0))[0]
-    print(buffer)
+
     propagate_labels(centers_idx, mask_label[index - numberofwarming+ 1: index+1], propagated_labels[index - numberofwarming + 1: index+1], distance_matrix, buffer)
 
     loss_ae = autoencoder_loss(new_instance_tensor, reconstructed_instance, reduced_instance, centers_idx, distance_matrix,
@@ -259,40 +259,42 @@ def compute_f1_transformed(labels, predictions):
     labels_transformed =  [0 if x != 2 else 1 for x in labels]
     predictions_transformed = [0 if x != 2 else 1 for x in predictions]
     print(recall_score(labels_transformed, predictions_transformed))
+    print(precision_score(labels_transformed, predictions_transformed))
     return f1_score(labels_transformed, predictions_transformed)
 
 if __name__ == '__main__':
     path = '../data/generated_final_dataset.csv'
     iterable_dataset, label, mask_label = iterabel_dataset_generation(path)
     ground_truth = []
-    number_of_warning = 300
+    number_of_warning = 100
 
     #model initialization
-    dynamic_distance_matrix = DynamicDistanceMatrix(number_of_warning, 20, 6)
+    dynamic_distance_matrix = DynamicDistanceMatrix(number_of_warning, 20, 3)
     autoencoder = AutoEncoder(input_dim=94, latent_dim=20)
     rejection_model = RejectionModel(input_dim=20)
     #model = CombinedModel(166, 20)
     optimizer_ae = optim.SGD(autoencoder.parameters(), lr=0.001)
-    optimizer_rm = optim.SGD(rejection_model.parameters(), lr=0.01)
+    optimizer_rm = optim.SGD(rejection_model.parameters(), lr=0.001)
 
-    propagated_labels = torch.tensor(mask_label, dtype=torch.int64)  # 转换为torch张量
+    #propagated_labels = torch.full((mask_label.size,), 2)
+    propagated_labels = torch.zeros((mask_label.size,))
 
     warm_data_array = np.zeros((number_of_warning, 94))
 
     for index, example in enumerate(iterable_dataset):
-        print(index)
         example = list(example.values())
         instance = np.array(example)
         if index < number_of_warning:
+
             warm_data_array[index] = instance
 
             if index == number_of_warning - 1:
-                warm(warm_data_array, number_of_warning, 5)
+                warm(warm_data_array, number_of_warning, 1)
                 print('---------------------------------')
         else:
             train(instance,number_of_warning, index)
 
-    print(np.sum(label == 2))
+
     print(np.sum(mask_label == 2))
     print(np.sum(propagated_labels.numpy() == 2))
     acc = compute_accuracy(label, propagated_labels)
