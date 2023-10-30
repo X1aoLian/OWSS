@@ -10,7 +10,6 @@ import torch.utils.data
 import torch.nn as nn
 import torch.nn.functional as F
 
-from layers import GraphAttentionLayer
 import sklearn
 from sklearn import preprocessing
 from sklearn.metrics import roc_curve,roc_auc_score
@@ -22,9 +21,102 @@ warnings.simplefilter("ignore")
 torch.backends.cudnn.benchmark = True
 torch.manual_seed(0)
 use_cuda = torch.cuda.is_available()
+
 if use_cuda:
     device = 'cuda'
+else:
+    device = 'cpu'
 
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class GraphAttentionLayer(nn.Module):
+    """
+    Simple GAT layer, similar to https://arxiv.org/abs/1710.10903
+    """
+
+    def __init__(self, in_features, out_features, dropout, alpha, concat=True):
+        super(GraphAttentionLayer, self).__init__()
+        self.dropout = dropout
+        self.in_features = in_features
+        self.out_features = out_features
+        self.alpha = alpha
+        self.concat = concat
+
+        self.W = nn.Parameter(torch.empty(size=(in_features, out_features)))
+        nn.init.xavier_uniform_(self.W.data, gain=1.414)
+        self.a = nn.Parameter(torch.empty(size=(2 * out_features, 1)))
+        nn.init.xavier_uniform_(self.a.data, gain=1.414)
+
+        self.leakyrelu = nn.LeakyReLU(self.alpha)
+
+    def forward(self, h, adj):
+        # print(h.shape, self.W.shape)  # torch.Size([1024, 22, 1]) torch.Size([1, 8])
+        Wh = h.matmul(self.W)  # h.shape: (N, in_features), Wh.shape: (N, out_features) # Wh torch.Size([1024, 22, 8])
+        a_input = self._prepare_attentional_mechanism_input(Wh)  # a_input torch.Size([1024, 22, 22, 16])
+        e = self.leakyrelu(torch.matmul(a_input, self.a).squeeze(3))  # e torch.Size([1024, 22, 22])
+        zero_vec = -9e15 * torch.ones_like(e)
+        attention = torch.where(adj > 0, e, zero_vec)  # attention: torch.Size([1024, 22, 22])
+
+        attention = F.softmax(attention, dim=2)  #
+        attention = F.dropout(attention, self.dropout, training=self.training)
+        h_prime = torch.matmul(attention, Wh)
+
+        return h_prime
+
+        """
+        if self.concat:
+            return F.elu(h_prime)
+        else:
+            return h_prime
+        """
+
+    def _prepare_attentional_mechanism_input(self, Wh):
+        N = Wh.size()[1]  # number of nodes
+
+        # Below, two matrices are created that contain embeddings in their rows in different orders.
+        # (e stands for embedding)
+        # These are the rows of the first matrix (Wh_repeated_in_chunks):
+        # e1, e1, ..., e1,            e2, e2, ..., e2,            ..., eN, eN, ..., eN
+        # '-------------' -> N times  '-------------' -> N times       '-------------' -> N times
+        #
+        # These are the rows of the second matrix (Wh_repeated_alternating):
+        # e1, e2, ..., eN, e1, e2, ..., eN, ..., e1, e2, ..., eN
+        # '----------------------------------------------------' -> N times
+        #
+
+        Wh_repeated_in_chunks = Wh.repeat_interleave(N, dim=1)
+        Wh_repeated_alternating = Wh.repeat(1, N, 1)
+        # Wh_repeated_in_chunks.shape == Wh_repeated_alternating.shape == (batch, N * N, out_features)
+
+        # The all_combination_matrix, created below, will look like this (|| denotes concatenation):
+        # e1 || e1
+        # e1 || e2
+        # e1 || e3
+        # ...
+        # e1 || eN
+        # e2 || e1
+        # e2 || e2
+        # e2 || e3
+        # ...
+        # e2 || eN
+        # ...
+        # eN || e1
+        # eN || e2
+        # eN || e3
+        # ...
+        # eN || eN
+
+        all_combinations_matrix = torch.cat([Wh_repeated_in_chunks, Wh_repeated_alternating], dim=2)
+        # all_combinations_matrix.shape == (batch, N * N, 2 * out_features)
+
+        return all_combinations_matrix.view(Wh.size()[0], N, N, 2 * self.out_features)
+
+    def __repr__(self):
+        return self.__class__.__name__ + ' (' + str(self.in_features) + ' -> ' + str(self.out_features) + ')'
 
 
 data = pd.read_csv('../data/final.csv')
@@ -375,7 +467,6 @@ class AsymmetricLoss(nn.Module):
 
         return -loss
 
-
 def inference(model, dataloader, adj, device):
     forecast_set = []
     target_set = []
@@ -388,7 +479,6 @@ def inference(model, dataloader, adj, device):
             forecast_set.append(forecast_result)
             target_set.append(target)
     return torch.cat(forecast_set, 0), torch.cat(target_set, 0)
-
 
 def EVAL(label_pred, label_true):
     mask = torch.ones(label_true.shape[0], label_true.shape[1]).to(device)
@@ -403,7 +493,6 @@ def EVAL(label_pred, label_true):
     recall = sum(sum(label_pred_prob > 0.5)[1::2]).item() / sum(sum(label_true > 0)[1::2]).item()
 
     return acc, recall, loss_valid.sum() / mask.sum()
-
 
 def get_correlation(label_train):
     label_train_adj = label_train
@@ -425,9 +514,66 @@ def get_correlation(label_train):
 
     correlation[correlation < 0.2] = 0
     correlation[correlation >= 0.2] = 1
-    correlation = correlation + np.identity(label_train_adj.shape[1], np.int)
+    correlation = correlation + np.identity(label_train_adj.shape[1], np.int64)
 
     return correlation
+
+def inference(model, dataloader, adj, device):
+    forecast_set = []
+    target_set = []
+    model.eval()
+    with torch.no_grad():
+        for i, (inputs, target) in enumerate(dataloader):
+            inputs = inputs.to(device)
+            target = target.to(device)
+            forecast_result = model(inputs, adj)
+            forecast_set.append(forecast_result)
+            target_set.append(target)
+    return torch.cat(forecast_set, 0), torch.cat(target_set, 0)
+
+def evaluate_softmax(label_pred, label_true, label_cols):
+    label_pred = torch.from_numpy(label_pred)
+
+    label_pred_prob = label_pred
+    label_pred_prob = label_pred_prob.masked_fill(torch.from_numpy(label_true) == 0, -1)  # mask prediction
+    label_pred_prob = label_pred_prob.numpy()
+
+    # convert predition into binary
+    label_pred_binary = torch.round(label_pred)
+    label_pred_binary = label_pred_binary.masked_fill(torch.from_numpy(label_true) == 0, 0)  # mask prediction
+    label_pred_binary = label_pred_binary.numpy()
+    if not np.count_nonzero(label_pred_binary):
+        print('error->all zeros')
+
+    meas_steps = [ms.split('-')[0] for ms in label_cols][::2]
+    result = pd.DataFrame(index=meas_steps, columns=['tp', 'tn', 'fn', 'fp', 'tpr', 'fpr', 'min_dis', 'auc'])
+    for i in range(len(meas_steps)):
+        neg = label_pred_prob[:, 2 * i]
+        pos = label_pred_prob[:, 2 * i + 1]
+
+        pos = pos[pos != -1]
+        neg = neg[neg != -1]
+
+        tp = sum(pos >= 0.5)
+        fn = sum(pos < 0.5)
+        tn = sum(neg >= 0.5)
+        fp = sum(neg < 0.5)
+
+        tpr = tp / (tp + fn + 1e-9)
+        fpr = fp / (fp + tn + 1e-9)
+
+        y_prob = np.append(pos, neg)
+        y_true = np.append([1] * len(pos), [0] * len(neg))
+        if len(pos) and len(neg):
+            fper, tper, thresholds = roc_curve(np.append([1] * len(pos), [0] * len(neg)), np.append(pos, 1 - neg))
+            auc = roc_auc_score(np.append([1] * len(pos), [0] * len(neg)), np.append(pos, 1 - neg))
+            min_dis = np.sqrt(fper ** 2 + (1 - tper) ** 2).min()
+        else:
+            min_dis = None
+            auc = None
+
+        result.iloc[i] = [tp, tn, fn, fp, tpr, fpr, min_dis, auc]
+    return result
 
 
 correlation = get_correlation(label_train)
@@ -585,5 +731,19 @@ for epoch in range(1000):
         else:
             continue
 
-result_file = os.path.join('output', 'stem_simple_random')
-save_model(model, result_file)
+#result_file = os.path.join('output', 'stem_simple_random')
+#save_model(model, result_file)
+
+
+model = Model(units=units, time_step = time_step, multi_layer=multi, labels=labels_num, device=device)
+model = load_model(os.path.join('output', 'stem_simple_random'))
+
+label_pred_train, label_true_train  = inference(model, train_loader, adj, device)
+result = evaluate_softmax(label_pred_train.detach().cpu().numpy(), label_true_train.detach().cpu().numpy(), label_cols)
+print(result)
+label_pred_val, label_true_val  = inference(model, valid_loader, adj, device)
+result = evaluate_softmax(label_pred_val.detach().cpu().numpy(), label_true_val.detach().cpu().numpy(), label_cols)
+print(result)
+label_pred_test, label_true_test = inference(model, test_loader, adj, device)
+result = evaluate_softmax(label_pred_test.detach().cpu().numpy(), label_true_test.detach().cpu().numpy(), label_cols)
+print(result)
