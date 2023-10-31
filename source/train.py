@@ -9,35 +9,44 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import train_test_split
 import torch
 from sklearn.metrics import f1_score, recall_score, precision_score
+from datasets import Dataset
 
-def dataset_generation(random_seed):
-    # 设置随机种子以便结果可复现
-    np.random.seed(random_seed)
+def transform_label(value):
+    if value == 6:
+        return 0
+    elif value == 5 :
+        return 1
+    else:
+        return 2
 
-    n_samples = 10000  # 每组样本数
-    n_features = 200  # 样本特征数
-    # 生成数据
-    cluster1 = np.random.normal(np.zeros(n_features), 1, size=(n_samples, n_features))
-    cluster2 = np.random.normal(np.ones(n_features) * 3, 1, size=(n_samples, n_features))
-    cluster3 = np.random.normal(np.ones(n_features) * 100, 1, size=(5000, n_features))
+def iterabel_dataset_generation(path):
+    df = pd.read_csv(path)
+    df['new_label'] = df['new_label'].apply(transform_label)
 
-    # 分配标签
-    labels1 = np.zeros(n_samples)
-    labels2 = np.ones(n_samples)
-    labels3 = np.ones(5000)
+    # Normalize the data
+    index = df['new_label'].values
 
-    # 组合数据和标签
-    data = np.vstack([cluster1, cluster2, cluster3])
-    labels = np.hstack([labels1, labels2, labels3])
+    data = df.iloc[:, :-1]
+    num_rows, num_cols = data.shape
+    rows_per_chunk = num_rows // 10
+    cols_per_chunk = num_cols // 10
 
-    # 生成index
-    index = np.array([0] * n_samples + [1] * n_samples + [2] * 5000)
+    for i in range(9):
+        start_row = i * rows_per_chunk
+        end_row = start_row + rows_per_chunk
+        end_col = (i + 1) * cols_per_chunk
 
-    # Shuffle数据，标签和index
-    data, labels, index = shuffle(data, labels, index)
+        # 将超出范围的列设置为 0
+        data.iloc[start_row:end_row, end_col:] = 0
 
-    return data, labels, index
+    # 处理最后一个块（它可能有多于 rows_per_chunk 的行）
+    data.iloc[9 * rows_per_chunk:, :] = data.iloc[9 * rows_per_chunk:, :]
+    #dataset = Dataset.from_pandas(data)
+    label = df.iloc[:, -1].values.astype(int)
 
+    data, label, index = shuffle(data, label, index)
+    #iterable_dataset = dataset.to_iterable_dataset()
+    return data.values, label, index
 
 class CombinedModel(nn.Module):
     def __init__(self):
@@ -45,7 +54,7 @@ class CombinedModel(nn.Module):
 
         # Autoencoder
         self.encoder = nn.Sequential(
-            nn.Linear(200, 128),
+            nn.Linear(94, 128),
             nn.ReLU(),
             nn.Linear(128, 64),
             nn.ReLU()
@@ -53,7 +62,7 @@ class CombinedModel(nn.Module):
         self.decoder = nn.Sequential(
             nn.Linear(64, 128),
             nn.ReLU(),
-            nn.Linear(128, 200),
+            nn.Linear(128, 94),
             nn.ReLU()
         )
 
@@ -85,7 +94,7 @@ def rejection_loss(rejection_value, loss, D ,lambda_):
     secondterm = lambda_ * (1 - (1 / (2 * lambda_ - 1) * rejection_value))
 
     result = torch.max(torch.max(first_term, secondterm), torch.tensor(0).to(first_term.device))
-
+    print(first_term, secondterm, result)
     #loss_tensor = torch.tensor([result], requires_grad=True)
     return result
 
@@ -118,9 +127,12 @@ criterion_rej = nn.MSELoss()
 
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-data, labels, index = dataset_generation(42)
+path = '../data/generated_negtive_oversample_data.csv'
+data, labels, index = iterabel_dataset_generation(path)
+
 data, labels, index = torch.tensor(data), torch.tensor(labels), torch.tensor(index)
 prediction = []
+rej_value = 0
 
 for epoch in range(1):
     for i, x in enumerate(data):
@@ -131,22 +143,28 @@ for epoch in range(1):
         optimizer.zero_grad()
         decoded, cls_out, rej_out = model(input)
         predicted_labels = (cls_out > 0.5).float()
-
+        rej_value = rej_value + rej_out
         loss_ae = criterion_ae(decoded, input)
-        loss_cls = criterion_cls(cls_out, label)
-
-        if rej_out < 0:
-            prediction.append(2)
-            combined_loss = loss_ae + loss_cls
+        if label == 2:
+            inverted_labels = 1 - predicted_labels
+            loss_cls = criterion_cls(cls_out, inverted_labels)
         else:
+            loss_cls = criterion_cls(cls_out, label)
+
+        print(rej_value)
+        if rej_value < 0:
+            loss_rej = rejection_loss(rej_value.detach(), 0, 0.5, 1)
+            prediction.append(2)
+            combined_loss = loss_ae + loss_rej
+        else:
+            loss_rej = rejection_loss(rej_value.detach(), loss_cls, 0.5, 1)
             prediction.append(predicted_labels.item())
-            loss_rej = rejection_loss(rej_out, loss_cls, 5, 1)
-            combined_loss = loss_ae + loss_cls + loss_rej
+            combined_loss = loss_ae + loss_rej + loss_cls
         combined_loss.backward()
         optimizer.step()
 
 
+
 print(prediction)
 prediction_int = np.array(prediction, dtype=int)
-print(np.sum(prediction_int == 2))
 evaluate_metrics(index, torch.tensor(prediction))

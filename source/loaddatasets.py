@@ -3,7 +3,8 @@ from sklearn.utils import shuffle
 from sklearn.preprocessing import StandardScaler, Normalizer
 from metric import *
 import torch
-
+from imblearn.over_sampling import SMOTE
+from sklearn.preprocessing import StandardScaler
 
 def mask_list(data, ratio):
     data_idx = torch.arange(0, data.size(0))
@@ -28,57 +29,60 @@ def musk_normalization(random_seed, label_rate):
     data, label, mask_label = shuffle(data_norm, label, mask_label, random_state=random_seed)
     for i in range(10):
         data[int(2196* (0.1 * (i))):int(2196 * (0.1 * (i + 1))), int(166 * (0.1 * (i + 1))):] = 0
-
     return data, label, mask_label
 
-import pandas as pd
-def iterabel_dataset_generation(path):
+
+
+def generated_fail_dataset(path):
+    # 1. 读取csv文件
     df = pd.read_csv(path)
-    labels_pass = [f"Label{i}-pass" for i in range(11)]
-    labels_fail = [f"Label{i}-fail" for i in range(11)]
-    # 初始化新的label列为0
-    df["label"] = 12
 
-    # 先根据每个Fail列进行更新
-    for i, label in enumerate(labels_fail):
-        df.loc[df[label] == 1, "label"] = i + 1
-    # 仅当new_label为0时，考虑Pass列
-    df.loc[(df[labels_pass].sum(axis=1) == 1) & (df["label"] == 12), "label"] = 0
-    # 结果展示，这里我假设你的sensor列是这样命名的sensor0, sensor1,..., sensor93
-    sensors = [f"Sensor{i+1}" for i in range(94)]
-    df = df[sensors + ["label"] + labels_pass + labels_fail]
+    # 2. 选择所有"Labelx-fail"列
+    fail_columns = [f'Label{i}-fail' for i in range(11)]
+    pass_columns = [f'Label{i}-pass' for i in range(11)]
+    # 3. 初始化一个空的DataFrame来存储结果
+    result_df = pd.DataFrame()
 
+    # 4. 为每个Labelx-fail列生成新样本
+    for column in fail_columns:
+        # 选出在特定的Labelx-fail列中值为1的样本
+        temp_df = df[df[column] == 1].copy()
+        # 创建新的列'new_label'并赋予对应的x值
+        temp_df['new_label'] = int(column.split('-')[0].replace('Label', ''))
+        # 将这个临时DataFrame添加到结果DataFrame中
+        result_df = pd.concat([result_df, temp_df], ignore_index=True)
 
+    # 5. 删除原始的Labelx-fail列
+    result_df = result_df.drop(columns=fail_columns)
+    result_df = result_df.drop(columns=pass_columns)
 
-    # 计算new_label列中值不为0的样本数量
-    non_zero_count = ((df['label'] != 0) & (df['label'] != 12)).sum()
+    # 6. 保存结果到新的csv文件
+    result_df.to_csv('../data/generated_negtive_data.csv', index=False)
+    print(result_df)
 
-    # 从值为0的样本中随机采样
-    #sampled_zero_df = df[df['label'] == 0 ].sample(n=1 * non_zero_count, replace=False)
-    sampled_zero_df = df[(df['label'] == 0) & (df['Label0-pass'] == 1)]
-    print(sampled_zero_df)
-    sampled_zero_df = sampled_zero_df.sample(n=1 * non_zero_count, replace=False)
+    # 7. 计算每个不同的new_label值对应的样本数量
+    label_counts = result_df['new_label'].value_counts()
 
-    # 获取值不为0的样本
-    non_zero_df = df[(df['label'] != 0) & (df['label'] != 12)]
+    # 8. 打印结果
+    print(label_counts)
 
+def oversample(path):
+    result_df = pd.read_csv(path)
+    # 假设 result_df 是您的数据
+    X = result_df.drop(columns='new_label')
+    y = result_df['new_label']
 
-    # 将两部分数据组合
-    final_df = pd.concat([sampled_zero_df, non_zero_df], axis=0)
+    # 对于传感器数据，通常先进行标准化
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    sampling_strat = {0:200,1:200, 2:200,3:200,4:200,5: 5000,6: 5000, 7:200,8:200,9:200,10:200}
+    smote = SMOTE(sampling_strategy= sampling_strat)
+    X_resampled, y_resampled = smote.fit_resample(X_scaled, y)
 
-    label_columns = ['Label0-pass', 'Label0-fail', 'Label1-pass', 'Label1-fail', 'Label2-pass', 'Label2-fail',
-                     'Label2-pass', 'Label2-fail'
-        , 'Label3-pass', 'Label3-fail', 'Label4-pass', 'Label4-fail', 'Label5-pass', 'Label5-fail', 'Label6-pass',
-                     'Label6-fail'
-        , 'Label7-pass', 'Label7-fail', 'Label8-pass', 'Label8-fail', 'Label9-pass', 'Label9-fail', 'Label10-pass',
-                     'Label10-fail']
-    final_df = final_df.drop(columns=label_columns)
+    df_resampled = pd.DataFrame(X_resampled, columns=X.columns)
+    df_resampled['new_label'] = y_resampled
+    # 然后您可以将X_resampled和y_resampled转换回DataFrame，并保存或进一步处理
+    df_resampled.to_csv('../data/generated_negtive_oversample_data.csv', index=False)
 
-
-    # 保存为CSV文件
-    final_df.to_csv('../data/generated_final_dataset.csv', index=False)
-    return final_df.values[:, :-1], final_df.values[:, -1]
-
-
-path = '../data/final.csv'
-data, label = iterabel_dataset_generation(path)
+path = '../data/generated_negtive_data.csv'
+oversample(path)
