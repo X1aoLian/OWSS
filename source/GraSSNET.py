@@ -119,28 +119,6 @@ class GraphAttentionLayer(nn.Module):
         return self.__class__.__name__ + ' (' + str(self.in_features) + ' -> ' + str(self.out_features) + ')'
 
 
-data = pd.read_csv('../data/final.csv')
-data = data.iloc[:50000]
-selected_columns = [col for col in data.columns if col.startswith("Sensor")]
-X = data[selected_columns].iloc[:, :-1]
-# Use the ~ operator to select the columns that don't match the prefix
-Y = data.loc[:, ~data.columns.isin(selected_columns)]
-label_cols = Y.columns
-X = X.values[:, np.newaxis, :]
-Y = Y.values
-X_train = X[:40000, :,:]
-label_train = Y[:40000, :]
-X_test = X[40000:, :,:]
-label_test = Y[40000:, :]
-class_numbers_train = [label_train[:,i].sum() for i in range(label_train.shape[1])]
-meas_steps = [ms for ms in label_cols]
-df_class_numbers_train = pd.DataFrame(np.asarray(class_numbers_train).reshape(1,label_train.shape[1]), columns = meas_steps)
-class_numbers_test = [label_test[:,i].sum() for i in range(label_test.shape[1])]
-meas_steps = [ms for ms in label_cols]
-df_class_numbers_test = pd.DataFrame(np.asarray(class_numbers_test).reshape(1,label_test.shape[1]), columns = meas_steps)
-
-
-
 class Dataset(torch.utils.data.Dataset):
     def __init__(self, data, labels, interval=1):
         self.data = data
@@ -505,8 +483,8 @@ def get_correlation(label_train):
 
     class_numbers = np.asarray([label_train_adj[:, i].sum() for i in range(label_train_adj.shape[1])])
     zero_classes = np.squeeze(np.asarray(np.where(class_numbers == 0)))
-    if len(zero_classes):
-        print('zero_classes:', zero_classes)
+    #if len(zero_classes):
+    #    print('zero_classes:', zero_classes)
     class_numbers[class_numbers == 0] = 1
     correlation = arr / (class_numbers[:, np.newaxis])
 
@@ -576,16 +554,49 @@ def evaluate_softmax(label_pred, label_true, label_cols):
     return result
 
 
+data = pd.read_csv('../data/final.csv')
+data = data.iloc[:50000]
+selected_columns = [col for col in data.columns if col.startswith("Sensor")]
+X = data[selected_columns].iloc[:, :-1]
+# Use the ~ operator to select the columns that don't match the prefix
+Y = data.loc[:, ~data.columns.isin(selected_columns)]
+label_cols = Y.columns
+X = X.values[:, np.newaxis, :]
+Y = Y.values
+X_train = X[:40000, :,:]
+label_train = Y[:40000, :]
+X_test = X[40000:, :,:]
+label_test = Y[40000:, :]
+class_numbers_train = [label_train[:,i].sum() for i in range(label_train.shape[1])]
+meas_steps = [ms for ms in label_cols]
+df_class_numbers_train = pd.DataFrame(np.asarray(class_numbers_train).reshape(1,label_train.shape[1]), columns = meas_steps)
+class_numbers_test = [label_test[:,i].sum() for i in range(label_test.shape[1])]
+meas_steps = [ms for ms in label_cols]
+df_class_numbers_test = pd.DataFrame(np.asarray(class_numbers_test).reshape(1,label_test.shape[1]), columns = meas_steps)
+
 correlation = get_correlation(label_train)
 meas_steps = [ms for ms in label_cols]
 
 train_data_set = Dataset(X_train, label_train)
 test_data_set = Dataset(X_test, label_test)
 valid_data_set = Dataset(X_test, label_test)
-train_loader = torch.utils.data.DataLoader(train_data_set, batch_size=1024, drop_last=False, shuffle=True, num_workers=0)
+train_loader = torch.utils.data.DataLoader(train_data_set, batch_size=2, drop_last=False, shuffle=True, num_workers=0)
 test_loader = torch.utils.data.DataLoader(test_data_set, batch_size=256, drop_last=False, shuffle=False, num_workers=0)
 valid_loader = torch.utils.data.DataLoader(valid_data_set, batch_size=256, drop_last=False, shuffle=False, num_workers=0)
 print('[Train] # batches->', len(train_loader), '\n[Test] # batches->', len(test_loader))
+
+open_indices = np.where(np.any(label_train[:,:12] == 1, axis=1))[0]
+open_label = label_train[open_indices]
+correlation = get_correlation(open_label)
+
+'''open_indices = np.where(np.any(label_train[:,:16] == 1, axis=1))[0]
+open_samples = X_train[open_indices]
+open_label = label_train[open_indices]
+correlation = get_correlation(open_label)
+meas_steps = [ms for ms in label_cols]
+train_data_set = Dataset(open_samples, open_label)
+train_loader = torch.utils.data.DataLoader(train_data_set, batch_size=2, drop_last=True, shuffle=True, num_workers=0)'''
+
 
 criterion = AsymmetricLoss(gamma_neg=2, gamma_pos=2, label_smoothing=0.0, clip=0.05, disable_torch_grad_focal_loss=True,
                            Asymmetric=False)
@@ -635,9 +646,11 @@ early_stop = 30
 validate_freq = 1
 iteration = 0
 
+prediction_list = []
+target_list = []
 adj = torch.from_numpy(correlation).to(device)
 
-for epoch in range(1000):
+for epoch in range(1):
     epoch_start_time = time.time()
     model.train()
     loss_total = 0
@@ -645,6 +658,9 @@ for epoch in range(1000):
     for i, (inputs, target) in enumerate(train_loader):
         inputs = inputs.to(device)
         target = target.to(device)
+        print(target)
+        target_list.append(target[0].detach().cpu().numpy())
+        target_list.append(target[1].detach().cpu().numpy())
 
         mask = torch.ones(target.shape[0], target.shape[1]).to(device)
         index = torch.tensor([0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20]).to(device)
@@ -653,7 +669,8 @@ for epoch in range(1000):
 
         model.zero_grad()
         forecast = model(inputs, adj)
-
+        prediction_list.append(forecast[0].detach().cpu().numpy())
+        prediction_list.append(forecast[1].detach().cpu().numpy())
         # todo: binary_focal_loss with label smoothing:
         #       binary_focal_loss: Setting γ > 0 reduces the relative loss for well-classified examples (pt > .5), putting more focus on hard, misclassified examples
         #                          γ = 0: standard cross entropy
@@ -696,7 +713,7 @@ for epoch in range(1000):
             format(epoch + 1, (time.time() - epoch_start_time), loss_total / cnt, acc_t, recall_t, best_performance,
                    min_loss_valid))
 
-        # ================================================================
+        '''# ================================================================
         # learning rate scheduale by validation loss
         my_lr_scheduler.step(loss_valid_t)
 
@@ -729,7 +746,7 @@ for epoch in range(1000):
             print('Early stopping!')
             break
         else:
-            continue
+            continue'''
 
 #result_file = os.path.join('output', 'stem_simple_random')
 #save_model(model, result_file)
@@ -738,12 +755,12 @@ for epoch in range(1000):
 model = Model(units=units, time_step = time_step, multi_layer=multi, labels=labels_num, device=device)
 model = load_model(os.path.join('output', 'stem_simple_random'))
 
-label_pred_train, label_true_train  = inference(model, train_loader, adj, device)
-result = evaluate_softmax(label_pred_train.detach().cpu().numpy(), label_true_train.detach().cpu().numpy(), label_cols)
+#label_pred_train, label_true_train  = inference(model, train_loader, adj, device)
+result = evaluate_softmax(np.array(prediction_list), np.array(target_list), label_cols)
 print(result)
-label_pred_val, label_true_val  = inference(model, valid_loader, adj, device)
-result = evaluate_softmax(label_pred_val.detach().cpu().numpy(), label_true_val.detach().cpu().numpy(), label_cols)
-print(result)
-label_pred_test, label_true_test = inference(model, test_loader, adj, device)
-result = evaluate_softmax(label_pred_test.detach().cpu().numpy(), label_true_test.detach().cpu().numpy(), label_cols)
-print(result)
+#label_pred_val, label_true_val  = inference(model, valid_loader, adj, device)
+#result = evaluate_softmax(label_pred_val.detach().cpu().numpy(), label_true_val.detach().cpu().numpy(), label_cols)
+#print(result)
+#label_pred_test, label_true_test = inference(model, test_loader, adj, device)
+#result = evaluate_softmax(label_pred_test.detach().cpu().numpy(), label_true_test.detach().cpu().numpy(), label_cols)
+#print(result)
