@@ -143,21 +143,27 @@ for epoch in range(1):
         optimizer.zero_grad()
         decoded, cls_out, rej_out = model(input)
         predicted_labels = (cls_out > 0.5).float()
-        rej_value = rej_value + rej_out
+
         loss_ae = criterion_ae(decoded, input)
+
         if label == 2:
             inverted_labels = 1 - predicted_labels
             loss_cls = criterion_cls(cls_out, inverted_labels)
         else:
-            loss_cls = criterion_cls(cls_out, label)
+            if label == predicted_labels:
+                loss_cls = 0
+            else:
+                loss_cls = criterion_cls(cls_out, label)
 
-        print(rej_value)
-        if rej_value < 0:
-            loss_rej = rejection_loss(rej_value.detach(), 0, 0.5, 1)
+
+
+        print(rej_out)
+        if rej_out < 0:
+            loss_rej = rejection_loss(rej_out.detach(), loss_cls, 0.5, 5)
             prediction.append(2)
             combined_loss = loss_ae + loss_rej
         else:
-            loss_rej = rejection_loss(rej_value.detach(), loss_cls, 0.5, 1)
+            loss_rej = rejection_loss(rej_out.detach(), loss_cls, 0.5, 5)
             prediction.append(predicted_labels.item())
             combined_loss = loss_ae + loss_rej + loss_cls
         combined_loss.backward()
@@ -166,5 +172,10 @@ for epoch in range(1):
 
 
 print(prediction)
+
 prediction_int = np.array(prediction, dtype=int)
 evaluate_metrics(index, torch.tensor(prediction))
+print(sum(labels == 0))
+print(sum(labels == 1))
+print(sum(labels == 2))
+print(sum(prediction_int == 2))
