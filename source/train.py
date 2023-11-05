@@ -9,7 +9,8 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import train_test_split
 import torch
 from sklearn.metrics import f1_score, recall_score, precision_score
-from datasets import Dataset
+import os
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
 def transform_label(value):
     if value == 6:
@@ -85,17 +86,29 @@ class CombinedModel(nn.Module):
         encoded = self.encoder(x)
         decoded = self.decoder(encoded)
         cls_out = self.classifier(encoded)
-        rej_out = self.rejection(encoded)
-        return decoded, cls_out, rej_out
+        return encoded, decoded, cls_out
+
+class RejectionModel(nn.Module):
+    def __init__(self):
+        super(RejectionModel, self).__init__()
+        self.fc1 = nn.Linear(64, 64)
+        self.fc2 = nn.Linear(64, 1)
+
+    def forward(self, x):
+        x = torch.relu(self.fc1(x))
+        x = self.fc2(x)
+        return x
 
 def rejection_loss(rejection_value, loss, D ,lambda_):
 
-    first_term = rejection_value + loss - D
-    secondterm = lambda_ * (1 - (1 / (2 * lambda_ - 1) * rejection_value))
+    #first_term = 0.5 * rejection_value + loss - D
+    #secondterm = lambda_ * (1 - (1 / (2 * lambda_ - 1) * rejection_value))
+
+    first_term = loss + lambda_ * rejection_value + D / (2 * lambda_ - 1)
+    secondterm = lambda_ * (1 - rejection_value - D / (2 * lambda_ - 1))
 
     result = torch.max(torch.max(first_term, secondterm), torch.tensor(0).to(first_term.device))
-    print(first_term, secondterm, result)
-    #loss_tensor = torch.tensor([result], requires_grad=True)
+    result = torch.tensor([result], requires_grad=True).to(device)
     return result
 
 
@@ -121,60 +134,68 @@ def evaluate_metrics(true_labels, predicted_labels):
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = CombinedModel().to(device)
+rejmodel = RejectionModel().to(device)
+
 criterion_ae = nn.MSELoss()
 criterion_cls = nn.BCELoss()
 criterion_rej = nn.MSELoss()
 
-optimizer = optim.Adam(model.parameters(), lr=0.001)
+optimizer_clf = optim.Adam(model.parameters(), lr=0.001)
+optimizer_rej = optim.Adam(rejmodel.parameters(), lr=0.001)
 
 path = '../data/generated_negtive_oversample_data.csv'
 data, labels, index = iterabel_dataset_generation(path)
 
 data, labels, index = torch.tensor(data), torch.tensor(labels), torch.tensor(index)
 prediction = []
-rej_value = 0
 
-for epoch in range(1):
-    for i, x in enumerate(data):
 
-        input = x.to(device).float()
-        label = labels[i].to(device).float().unsqueeze(0)
+accumulative_loss = 0
 
-        optimizer.zero_grad()
-        decoded, cls_out, rej_out = model(input)
-        predicted_labels = (cls_out > 0.5).float()
+for i, x in enumerate(data):
 
-        loss_ae = criterion_ae(decoded, input)
+    input = x.to(device).float()
+    label = labels[i].to(device).float().unsqueeze(0)
 
-        if label == 2:
+    encoded, decoded, cls_out = model(input)
+    rej_out = rejmodel(encoded)
+    predicted_labels = (cls_out > 0.5).float()
+    loss_ae = criterion_ae(decoded, input)
+
+
+    if rej_out > 0:
+        if label != 2:
+            loss_cls = criterion_cls(cls_out, label)
+        else:
             inverted_labels = 1 - predicted_labels
             loss_cls = criterion_cls(cls_out, inverted_labels)
-        else:
-            if label == predicted_labels:
-                loss_cls = 0
-            else:
-                loss_cls = criterion_cls(cls_out, label)
-
-
-
-        print(rej_out)
-        if rej_out < 0:
-            loss_rej = rejection_loss(rej_out.detach(), loss_cls, 0.5, 5)
-            prediction.append(2)
-            combined_loss = loss_ae + loss_rej
-        else:
-            loss_rej = rejection_loss(rej_out.detach(), loss_cls, 0.5, 5)
-            prediction.append(predicted_labels.item())
-            combined_loss = loss_ae + loss_rej + loss_cls
+        optimizer_clf.zero_grad()
+        combined_loss = loss_ae + loss_cls
         combined_loss.backward()
-        optimizer.step()
+        optimizer_clf.step()
+
+        accumulative_loss+=rej_out
+        optimizer_rej.zero_grad()
+        loss_rej = rejection_loss((accumulative_loss/i).detach(), loss_cls, 0.2, 1)
+        loss_rej.backward(retain_graph=True)
+        optimizer_rej.step()
+
+        prediction.append(predicted_labels.item())
+
+    else:
+
+        accumulative_loss += rej_out
+        optimizer_rej.zero_grad()
+        loss_rej = rejection_loss((accumulative_loss/i).detach(), 0, 0.2, 1)
+        print(loss_rej, i)
+        loss_rej.backward(retain_graph=True)
+        optimizer_rej.step()
+        prediction.append(2)
 
 
-
-print(prediction)
 
 prediction_int = np.array(prediction, dtype=int)
-evaluate_metrics(index, torch.tensor(prediction))
+evaluate_metrics(labels, torch.tensor(prediction))
 print(sum(labels == 0))
 print(sum(labels == 1))
 print(sum(labels == 2))

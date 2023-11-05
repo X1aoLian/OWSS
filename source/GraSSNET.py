@@ -12,7 +12,7 @@ import torch.nn.functional as F
 
 import sklearn
 from sklearn import preprocessing
-from sklearn.metrics import roc_curve,roc_auc_score
+from sklearn.metrics import roc_curve, roc_auc_score, f1_score, recall_score, precision_score
 from scipy.special import lambertw
 from typing import Optional
 import warnings
@@ -368,7 +368,9 @@ class Model(nn.Module):
         #         # ========================= Sensor Feature Engineering =======================
         x_snsr = self.add_noise(x)  # (x[:, :, self.categorical:])
         x_emb1 = x_snsr
+
         prediction_sensor1 = self.leakyrelu(self.outputnorm(self.stock_block(x_emb1)))
+
         prediction = self.sensor(prediction_sensor1)
 
         # ========================= emerge branches ===================================
@@ -554,53 +556,57 @@ def evaluate_softmax(label_pred, label_true, label_cols):
     return result
 
 
+
+
+
 data = pd.read_csv('../data/final.csv')
 data = data.iloc[:50000]
 selected_columns = [col for col in data.columns if col.startswith("Sensor")]
 X = data[selected_columns].iloc[:, :-1]
 # Use the ~ operator to select the columns that don't match the prefix
 Y = data.loc[:, ~data.columns.isin(selected_columns)]
+
+
+df = pd.read_csv('../data/generated_negtive_oversample_data.csv')
+X = df.filter(regex='^Sensor')
+df['mapped_label'] = df['new_label'].apply(lambda x: x if x in [5, 6] else 7)
+# 生成独热编码
+Y= pd.get_dummies(df['mapped_label']).astype(int)
+
+# 重命名列以反映新的标签
+Y.columns = [f'Label{i}-fail' for i in Y.columns]
+
+# 为每个fail列添加一个pass列，所有值初始化为0
+for i in range(3):
+    Y.insert(2*i, f'Label{i}-pass', 0)
+
+
 label_cols = Y.columns
 X = X.values[:, np.newaxis, :]
 Y = Y.values
 X_train = X[:40000, :,:]
+
 label_train = Y[:40000, :]
-X_test = X[40000:, :,:]
-label_test = Y[40000:, :]
+
 class_numbers_train = [label_train[:,i].sum() for i in range(label_train.shape[1])]
 meas_steps = [ms for ms in label_cols]
 df_class_numbers_train = pd.DataFrame(np.asarray(class_numbers_train).reshape(1,label_train.shape[1]), columns = meas_steps)
-class_numbers_test = [label_test[:,i].sum() for i in range(label_test.shape[1])]
 meas_steps = [ms for ms in label_cols]
-df_class_numbers_test = pd.DataFrame(np.asarray(class_numbers_test).reshape(1,label_test.shape[1]), columns = meas_steps)
-
 correlation = get_correlation(label_train)
 meas_steps = [ms for ms in label_cols]
 
+
 train_data_set = Dataset(X_train, label_train)
-test_data_set = Dataset(X_test, label_test)
-valid_data_set = Dataset(X_test, label_test)
+
 train_loader = torch.utils.data.DataLoader(train_data_set, batch_size=2, drop_last=False, shuffle=True, num_workers=0)
-test_loader = torch.utils.data.DataLoader(test_data_set, batch_size=256, drop_last=False, shuffle=False, num_workers=0)
-valid_loader = torch.utils.data.DataLoader(valid_data_set, batch_size=256, drop_last=False, shuffle=False, num_workers=0)
-print('[Train] # batches->', len(train_loader), '\n[Test] # batches->', len(test_loader))
 
-open_indices = np.where(np.any(label_train[:,:12] == 1, axis=1))[0]
-open_label = label_train[open_indices]
-correlation = get_correlation(open_label)
 
-'''open_indices = np.where(np.any(label_train[:,:16] == 1, axis=1))[0]
-open_samples = X_train[open_indices]
-open_label = label_train[open_indices]
-correlation = get_correlation(open_label)
-meas_steps = [ms for ms in label_cols]
-train_data_set = Dataset(open_samples, open_label)
-train_loader = torch.utils.data.DataLoader(train_data_set, batch_size=2, drop_last=True, shuffle=True, num_workers=0)'''
 
 
 criterion = AsymmetricLoss(gamma_neg=2, gamma_pos=2, label_smoothing=0.0, clip=0.05, disable_torch_grad_focal_loss=True,
                            Asymmetric=False)
 forecast_loss_valid = torch.nn.BCEWithLogitsLoss(reduction='none').to(device)
+
 
 # hyper parameters
 multi = 4
@@ -615,7 +621,10 @@ model = Model(units=units, time_step=time_step, multi_layer=multi, labels=labels
 model.to(device)
 
 positives = torch.tensor(df_class_numbers_train.values.astype(np.float32))
+positives= torch.where(positives == 0, torch.tensor(1.0), positives)
+
 negtives = (label_train.shape[0] - positives)
+
 pos_weight = negtives / positives
 pos_weight = pos_weight.squeeze()
 print('pos_weight: ', pos_weight)
@@ -656,19 +665,19 @@ for epoch in range(1):
     loss_total = 0
     cnt = 0
     for i, (inputs, target) in enumerate(train_loader):
+
         inputs = inputs.to(device)
         target = target.to(device)
-        print(target)
         target_list.append(target[0].detach().cpu().numpy())
         target_list.append(target[1].detach().cpu().numpy())
 
         mask = torch.ones(target.shape[0], target.shape[1]).to(device)
-        index = torch.tensor([0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20]).to(device)
+        index = torch.tensor([0, 2, 4,]).to(device)
         mask = mask.index_copy_(1, index, target[:, ::2] + target[:, 1::2])
         mask = mask.index_copy_(1, index + 1, target[:, ::2] + target[:, 1::2])
-
         model.zero_grad()
         forecast = model(inputs, adj)
+        print(forecast)
         prediction_list.append(forecast[0].detach().cpu().numpy())
         prediction_list.append(forecast[1].detach().cpu().numpy())
         # todo: binary_focal_loss with label smoothing:
@@ -687,8 +696,7 @@ for epoch in range(1):
         mask_unlabel = forecast.ge(0.95).float()
         loss_unlabel = (forecast_loss_un(forecast, torch.round(forecast)) * mask_unlabel).mean()
 
-        loss = loss + loss_unlabel
-
+        loss = loss
         cnt += 1
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), clipping_value)
@@ -696,7 +704,7 @@ for epoch in range(1):
         my_optim.step()
         loss_total += float(loss)
 
-    if (epoch + 1) % validate_freq == 0:
+    '''if (epoch + 1) % validate_freq == 0:
 
         train_loss.append(loss_total / cnt)
         is_best_for_now_minloss = False
@@ -713,7 +721,7 @@ for epoch in range(1):
             format(epoch + 1, (time.time() - epoch_start_time), loss_total / cnt, acc_t, recall_t, best_performance,
                    min_loss_valid))
 
-        '''# ================================================================
+        # ================================================================
         # learning rate scheduale by validation loss
         my_lr_scheduler.step(loss_valid_t)
 
@@ -750,14 +758,49 @@ for epoch in range(1):
 
 #result_file = os.path.join('output', 'stem_simple_random')
 #save_model(model, result_file)
+def reassign_labels(samples):
+    new_labels = []
+    for sample in samples:
+        # 取出所有奇数位置的值，即所有pos的值
+        pos_values = sample[1::2]
+        # 找到最大pos值的索引
+        max_pos_index = pos_values.argmax()
+        # 该索引对应的是第几对
+        label = max_pos_index
+        new_labels.append(label)
+    return new_labels
 
+def evaluate_metrics(true_labels, predicted_labels):
+    print(predicted_labels)
+    print(true_labels)
+    true_labels = np.array(true_labels)
+    predicted_labels = np.array(predicted_labels)
+    # 1. Calculate accuracy for predicted values of 0 or 1
+    mask = predicted_labels != 2
+    accuracy = (true_labels[mask] == predicted_labels[mask]).mean()
+
+    # 2.
+    true_binary = (true_labels == 2)
+    predicted_binary = (predicted_labels == 2)
+
+    f1 = f1_score(true_binary, predicted_binary)
+    recall = recall_score(true_binary, predicted_binary)
+    precision = precision_score(true_binary, predicted_binary)
+
+    print(f"Accuracy (only for predicted 0 or 1): {accuracy}")
+    print(f"F1 Score: {f1}")
+    print(f"Recall: {recall}")
+    print(f"Precision: {precision}")
 
 model = Model(units=units, time_step = time_step, multi_layer=multi, labels=labels_num, device=device)
 model = load_model(os.path.join('output', 'stem_simple_random'))
+new_label = reassign_labels(target_list)
+new_prediction = reassign_labels(prediction_list)
+evaluate_metrics(new_label, new_prediction)
 
 #label_pred_train, label_true_train  = inference(model, train_loader, adj, device)
-result = evaluate_softmax(np.array(prediction_list), np.array(target_list), label_cols)
-print(result)
+#result = evaluate_softmax(np.array(prediction_list), np.array(target_list), label_cols)
+#print(result)
 #label_pred_val, label_true_val  = inference(model, valid_loader, adj, device)
 #result = evaluate_softmax(label_pred_val.detach().cpu().numpy(), label_true_val.detach().cpu().numpy(), label_cols)
 #print(result)
