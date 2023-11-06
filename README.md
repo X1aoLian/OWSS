@@ -1,27 +1,25 @@
-# Online Learning in Open Feature and Label Spaces
+# Utilitarian Online Learning from Open-World Soft Sensing
 
-This paper explores a new problem of Online Learning in Open Feature and Label Spaces, where the dynamic nature
-of the feature set demands continuous evolution with the addition
-of new features and elimination of outdated ones. This open-ended learning paradigm, unconstrained at both input and output
-stages, deals with mostly unlabeled data sequences, potentially
-hosting unknown classes. Speciﬁcally, it presents two principal
-technical hurdles: i) the deceleration of online convergence and
-the disabling of distance measurements due to feature space
-dynamics, and ii) the unbounded open-world risk that negatively
-interacts with empirical risk during the online process. To
-overcome these challenges, we propose a new OOFLS approach,
-with its key idea lying in the pursuit of a universal representation
-space that delineates a geometric structure underpinning data
-sequence. This representation space ensures proximate placement
-of data points with probable identical labels and minimizes the
-volume of each such known-class region. Our approach buffers
-the data points that give rise to tradeoffs between open-world
-and empirical risks, enabling optimal rejection to single out low-conﬁdence points from known classes and high-conﬁdence points
-from unknown classes. Theoretical results rationalize our universal representation learning design. Extensive experiments across
-ﬁve benchmark datasets, against three cutting-edge competitor
-models and two ablation variants, substantiate the viability and
-superiority of our proposed approach in known-class online
-classiﬁcation and unknown-class identiﬁcation.
+In Industry 4.0, soft sensing enables to monitor and control complex
+industrial processes in real-time. Whereas recent online algorithms
+bolster predictive modeling on soft sensing streams that increment
+in volume and vary in feature dimensions, they operate mainly in
+closed-world settings, where all class labels must be known before-
+hand. This is restrictive in practical applications like semiconductor
+manufacturing, where new wafer defect types emerge dynamically
+in unforeseeable manners. This study aims to advance online algo-
+rithms by allowing learners opt to abstain from make prediction at
+certain costs. Our key idea is to establish a universal representation
+space aligning feature dimensions of incoming points while delin-
+eating a geometric shape underpinning them. On this shape, we
+minimize the region spanned by points of known classes through
+optimizing the tradeoff between empirical risk and abstention cost.
+Theoretical results rationalize our universal representation learning
+design. We benchmark our approach on six datasets, including one
+real-world dataset of wafer fault-diagnostics collected through chip
+manufacturing lines in Seagate. Experimental results substantiate
+the effectiveness of our proposed approach, demonstrating superior
+performance over four state-of-the-art rival models.
 
 ## Prerequisites
 
