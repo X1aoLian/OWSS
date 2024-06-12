@@ -13,7 +13,7 @@ This hardware configuration ensured efficient processing and analysis of the lar
 
 ## Theoretical Proof
 
-For a detailed theoretical proof of our universal representation learning design, please refer to the following document: [Theoretical Proof PDF](proof.pdf).
+For a detailed theoretical proof of our universal representation learning design, please refer to the following document: [Theoretical Proof PDF](Proof.pdf).
 
 ## Prerequisites
 
